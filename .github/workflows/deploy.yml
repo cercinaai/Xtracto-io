@@ -47,10 +47,14 @@ jobs:
             # Supprimer l’ancien conteneur s’il existe
             docker stop xtracto-container || true
             docker rm xtracto-container || true
+            # Créer le répertoire avec les bonnes permissions
+            mkdir -p /home/ubuntu/xtracto-io
+            chown ubuntu:ubuntu /home/ubuntu/xtracto-io
             # Tirer la nouvelle image
             docker pull ${{ secrets.DOCKERHUB_USERNAME }}/xtracto-io:latest
-            # Exécuter le conteneur avec le fichier d’environnement
+            # Exécuter le conteneur
             docker run -d --name xtracto-container \
               -p 8002:8002 \
               -v /home/ubuntu/xtracto-io:/app/src/environment \
+              -e ENVIRONMENT=prod \
               ${{ secrets.DOCKERHUB_USERNAME }}/xtracto-io:latest
