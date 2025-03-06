@@ -1,4 +1,10 @@
 venv/
-local.env
 *.log
+*.pyc
+__pycache__/
+*.env
+*.zip
+*.tar.gz
+*.db
+local.env
 __pycache__/
