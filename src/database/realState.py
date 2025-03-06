@@ -97,17 +97,18 @@ async def update_annonce_images(annonce_id: str, images: List[str], nbrImages: i
     return False
 
 async def transfer_annonce(annonce: Dict) -> bool:
-    """Transfère une annonce sans supprimer la source, met à jour les attributs manquants si elle existe."""
+    """Transfère une annonce avec tous ses attributs et son _id original, met à jour les attributs manquants si elle existe."""
     source_db = get_source_db()
     dest_db = get_destination_db()
     source_collection = source_db["realStateLbc"]
     dest_collection = dest_db["realStateLbc"]
 
+    # Vérifier si l'annonce existe dans la destination par idSec
     existing = await dest_collection.find_one({"idSec": annonce["idSec"]})
     if existing:
         update_data = {}
         for key, value in annonce.items():
-            if key not in existing or existing[key] is None:
+            if key != "_id" and (key not in existing or existing[key] is None):  # Exclure _id de la mise à jour
                 update_data[key] = value
         if update_data:
             result = await dest_collection.update_one(
@@ -120,6 +121,9 @@ async def transfer_annonce(annonce: Dict) -> bool:
         logger.info(f"ℹ️ Annonce {annonce['idSec']} déjà complète dans la destination")
         return False
     else:
+        # Conserver l'_id original et transférer tous les attributs
+        if "_id" not in annonce:
+            logger.warning(f"⚠️ Annonce {annonce['idSec']} sans _id dans la source, création sans _id spécifique")
         await dest_collection.insert_one(annonce)
-        logger.info(f"✅ Annonce {annonce['idSec']} transférée vers la base destination")
+        logger.info(f"✅ Annonce {annonce['idSec']} transférée avec tous ses attributs et son _id original vers la base destination")
         return True

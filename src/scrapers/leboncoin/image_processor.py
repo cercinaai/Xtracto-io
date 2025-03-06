@@ -27,8 +27,12 @@ async def transfer_processed_annonces(max_concurrent_tasks: int = 20) -> Dict:
     async def transfer_annonce_wrapper(annonce: Dict) -> bool:
         async with semaphore:
             try:
-                idAgence = annonce.get("idAgence")  # Utiliser idAgence, pas storeId ici
-                if idAgence:
+                # Utiliser storeId ou idAgence pour l'agence
+                storeId = annonce.get("storeId")
+                idAgence = annonce.get("idAgence")
+                if storeId:
+                    await transfer_agence(storeId, annonce.get("agenceName"))
+                elif idAgence:
                     await transfer_agence(idAgence, annonce.get("agenceName"))
                 return await transfer_annonce(annonce)
             except Exception as e:
@@ -100,12 +104,15 @@ async def process_annonce_images(annonce: Dict, annonce_id: str, image_urls: Lis
         full_annonce["nbrImages"] = len(updated_image_urls)
         full_annonce["scraped_at"] = datetime.utcnow()
 
-        # Transférer l'agence associée
-        idAgence = full_annonce.get("idAgence")  # Utiliser idAgence de l'annonce complète
-        if idAgence:
+        # Transférer l'agence associée en utilisant storeId ou idAgence
+        storeId = full_annonce.get("storeId")
+        idAgence = full_annonce.get("idAgence")
+        if storeId:
+            await transfer_agence(storeId, full_annonce.get("agenceName"))
+        elif idAgence:
             await transfer_agence(idAgence, full_annonce.get("agenceName"))
 
-        # Transférer l'annonce complète
+        # Transférer l'annonce complète avec tous ses attributs
         await transfer_annonce(full_annonce)
         return {"idSec": annonce_id, "images": updated_image_urls, "idAgence": idAgence}
 
