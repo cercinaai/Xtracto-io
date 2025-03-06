@@ -27,7 +27,7 @@ async def transfer_processed_annonces(max_concurrent_tasks: int = 20) -> Dict:
     async def transfer_annonce_wrapper(annonce: Dict) -> bool:
         async with semaphore:
             try:
-                idAgence = annonce.get("storeId")
+                idAgence = annonce.get("idAgence")  # Utiliser idAgence, pas storeId ici
                 if idAgence:
                     await transfer_agence(idAgence, annonce.get("agenceName"))
                 return await transfer_annonce(annonce)
@@ -85,22 +85,30 @@ async def process_annonce_images(annonce: Dict, annonce_id: str, image_urls: Lis
         uploaded_urls = await asyncio.gather(*upload_tasks, return_exceptions=True)
         updated_image_urls = [url if isinstance(url, str) else "N/A" for url in uploaded_urls]
 
+        # Mettre à jour les images dans la base source
         await update_annonce_images(annonce_id, updated_image_urls, len(updated_image_urls))
 
-        idAgence = annonce.get("storeId")
-        if idAgence:
-            await transfer_agence(idAgence, annonce.get("agenceName"))
+        # Récupérer l'annonce complète depuis la base source
+        source_db = get_source_db()
+        full_annonce = await source_db["realStateLbc"].find_one({"idSec": annonce_id})
+        if not full_annonce:
+            logger.error(f"❌ Annonce {annonce_id} non trouvée dans la base source après mise à jour des images")
+            return None
 
-        updated_annonce = {
-            "idSec": annonce_id,
-            "title": annonce.get("title"),
-            "images": updated_image_urls,
-            "nbrImages": len(updated_image_urls),
-            "idAgence": idAgence,
-            "scraped_at": datetime.utcnow()
-        }
-        await transfer_annonce(updated_annonce)
+        # Mettre à jour les champs liés aux images dans l'annonce complète
+        full_annonce["images"] = updated_image_urls
+        full_annonce["nbrImages"] = len(updated_image_urls)
+        full_annonce["scraped_at"] = datetime.utcnow()
+
+        # Transférer l'agence associée
+        idAgence = full_annonce.get("idAgence")  # Utiliser idAgence de l'annonce complète
+        if idAgence:
+            await transfer_agence(idAgence, full_annonce.get("agenceName"))
+
+        # Transférer l'annonce complète
+        await transfer_annonce(full_annonce)
         return {"idSec": annonce_id, "images": updated_image_urls, "idAgence": idAgence}
+
     except Exception as e:
         logger.error(f"⚠️ Erreur pour annonce {annonce_id} : {e}")
         return None

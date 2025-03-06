@@ -40,15 +40,10 @@ async def transfer_agence(storeId: str, name: Optional[str] = None) -> bool:
             "lien": f"https://www.leboncoin.fr/boutique/{storeId}"
         }
 
-    # Convertir en objet Pydantic pour valider les données
-    try:
-        agence_validated = AgenceModel(**agence_source)
-        agence_data = agence_validated.dict(exclude_none=True)  # Exclure les champs None
-    except Exception as e:
-        logger.error(f"❌ Erreur de validation des données pour l'agence {storeId} : {e}")
-        return False
+    # S'assurer que storeId est cohérent
+    agence_source["storeId"] = storeId
 
-    # Insérer l'agence dans la destination
-    await dest_collection.insert_one(agence_data)
-    logger.info(f"✅ Agence {storeId} transférée avec succès vers la base destination.")
+    # Insérer l'agence complète dans la destination
+    await dest_collection.insert_one(agence_source)
+    logger.info(f"✅ Agence {storeId} transférée avec tous les attributs vers la base destination.")
     return True
