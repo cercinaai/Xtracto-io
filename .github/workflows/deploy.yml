@@ -33,13 +33,14 @@ jobs:
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/xtracto-io:latest
 
-      # Étape 5 : Déployer sur le VPS via SSH avec mot de passe
+      # Étape 5 : Déployer sur le VPS via SSH avec clé
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USERNAME }}
-          password: ${{ secrets.VPS_PASSWORD }}
+          host: ${{ secrets.VPS_HOST }}  # Doit être "141.94.240.141"
+          username: ${{ secrets.VPS_USERNAME }}  # Doit être "ubuntu"
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}  # Clé privée copiée depuis C:\Users\hp EliteBook 1040 g7\.ssh\vps
+          port: 22022  # Port SSH correct
           timeout: 60s
           script_stop: true
           debug: true
