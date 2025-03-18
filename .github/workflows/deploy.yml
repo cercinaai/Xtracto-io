@@ -112,3 +112,4 @@ jobs:
             echo "Vérification du conteneur..."
             docker ps -a | grep xtracto-container || { echo "Conteneur non démarré"; exit 1; }
             echo "Déploiement terminé avec succès"
+            
