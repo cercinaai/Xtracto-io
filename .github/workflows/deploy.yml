@@ -33,7 +33,14 @@ jobs:
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/xtracto-io:latest
 
-      # Étape 5 : Déployer sur le VPS via SSH avec clé
+      # Étape 5 : Vérifier la connectivité réseau
+      - name: Test network connectivity to VPS
+        run: |
+          echo "Testing connectivity to ${{ secrets.VPS_HOST }} on port 22022..."
+          nc -zv ${{ secrets.VPS_HOST }} 22022 || { echo "Failed to connect to ${{ secrets.VPS_HOST }}:22022"; exit 1; }
+          echo "Connectivity test passed!"
+
+      # Étape 6 : Déployer sur le VPS via SSH avec clé
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.0.3
         with:
