@@ -51,67 +51,67 @@ jobs:
           timeout: 60s
           script_stop: true
           debug: true
-        env:
+          env:
           ENVIRONMENT: prod
           MONGO_URI: ${{ secrets.MONGO_URI }}  # Doit être encodé correctement, ex. mongodb://admin:%28D937k%7B%C2%A3j6kWJBd%7D%29%2Fa@mongodb:27017/xtractio?authSource=admin
           AWS_S3_BUCKET_NAME: ${{ secrets.AWS_S3_BUCKET_NAME }}
           AWS_S3_ENDPOINT: ${{ secrets.AWS_S3_ENDPOINT }}
           AWS_S3_ACCESS_KEY: ${{ secrets.AWS_S3_ACCESS_KEY }}
           AWS_S3_SECRET_KEY: ${{ secrets.AWS_S3_SECRET_KEY }}
-        script: |
-          echo "Démarrage du script de déploiement"
-          echo "Tentative de connexion SSH avec l'utilisateur $USER"
-          whoami || { echo "Erreur SSH : échec de l'authentification"; cat /var/log/auth.log | tail -n 10; exit 1; }
+          script: |
+            echo "Démarrage du script de déploiement"
+            echo "Tentative de connexion SSH avec l'utilisateur $USER"
+            whoami || { echo "Erreur SSH : échec de l'authentification"; cat /var/log/auth.log | tail -n 10; exit 1; }
 
-          # Connexion à Docker Hub
-          echo "Connexion à Docker Hub..."
-          docker login -u ${{ secrets.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }} || { echo "Erreur Docker login"; exit 1; }
-          
-          # Supprimer l’ancien conteneur
-          echo "Suppression de l'ancien conteneur..."
-          docker stop xtracto-container || true
-          docker rm xtracto-container || true
-          
-          # Créer le répertoire
-          echo "Création du répertoire /home/ubuntu/xtracto-io..."
-          mkdir -p /home/ubuntu/xtracto-io || { echo "Erreur création répertoire"; exit 1; }
-          chown ubuntu:ubuntu /home/ubuntu/xtracto-io || { echo "Erreur changement propriétaire"; exit 1; }
-          chmod 700 /home/ubuntu/xtracto-io || { echo "Erreur changement permissions"; exit 1; }
-          
-          # Créer prod.env avec les variables encodées
-          echo "Création du fichier prod.env..."
-          echo "ENVIRONMENT=prod" > /home/ubuntu/xtracto-io/prod.env
-          echo "MONGO_URI=$MONGO_URI" >> /home/ubuntu/xtracto-io/prod.env
-          echo "AWS_S3_BUCKET_NAME=$AWS_S3_BUCKET_NAME" >> /home/ubuntu/xtracto-io/prod.env
-          echo "AWS_S3_ENDPOINT=$AWS_S3_ENDPOINT" >> /home/ubuntu/xtracto-io/prod.env
-          echo "AWS_S3_ACCESS_KEY=$AWS_S3_ACCESS_KEY" >> /home/ubuntu/xtracto-io/prod.env
-          echo "AWS_S3_SECRET_KEY=$AWS_S3_SECRET_KEY" >> /home/ubuntu/xtracto-io/prod.env
-          echo "KAMELEO_HOST=192.168.122.33" >> /home/ubuntu/xtracto-io/prod.env
-          echo "KAMELEO_PORT=5001" >> /home/ubuntu/xtracto-io/prod.env
-          chown ubuntu:ubuntu /home/ubuntu/xtracto-io/prod.env
-          chmod 600 /home/ubuntu/xtracto-io/prod.env
+            # Connexion à Docker Hub
+            echo "Connexion à Docker Hub..."
+            docker login -u ${{ secrets.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }} || { echo "Erreur Docker login"; exit 1; }
+            
+            # Supprimer l’ancien conteneur
+            echo "Suppression de l'ancien conteneur..."
+            docker stop xtracto-container || true
+            docker rm xtracto-container || true
+            
+            # Créer le répertoire
+            echo "Création du répertoire /home/ubuntu/xtracto-io..."
+            mkdir -p /home/ubuntu/xtracto-io || { echo "Erreur création répertoire"; exit 1; }
+            chown ubuntu:ubuntu /home/ubuntu/xtracto-io || { echo "Erreur changement propriétaire"; exit 1; }
+            chmod 700 /home/ubuntu/xtracto-io || { echo "Erreur changement permissions"; exit 1; }
+            
+            # Créer prod.env avec les variables encodées
+            echo "Création du fichier prod.env..."
+            echo "ENVIRONMENT=$ENVIRONMENT" > /home/ubuntu/xtracto-io/prod.env
+            echo "MONGO_URI=$MONGO_URI" >> /home/ubuntu/xtracto-io/prod.env
+            echo "AWS_S3_BUCKET_NAME=$AWS_S3_BUCKET_NAME" >> /home/ubuntu/xtracto-io/prod.env
+            echo "AWS_S3_ENDPOINT=$AWS_S3_ENDPOINT" >> /home/ubuntu/xtracto-io/prod.env
+            echo "AWS_S3_ACCESS_KEY=$AWS_S3_ACCESS_KEY" >> /home/ubuntu/xtracto-io/prod.env
+            echo "AWS_S3_SECRET_KEY=$AWS_S3_SECRET_KEY" >> /home/ubuntu/xtracto-io/prod.env
+            echo "KAMELEO_HOST=192.168.122.33" >> /home/ubuntu/xtracto-io/prod.env
+            echo "KAMELEO_PORT=5001" >> /home/ubuntu/xtracto-io/prod.env
+            chown ubuntu:ubuntu /home/ubuntu/xtracto-io/prod.env
+            chmod 600 /home/ubuntu/xtracto-io/prod.env
 
-          # Débogage
-          echo "Débogage : Contenu de prod.env..."
-          cat /home/ubuntu/xtracto-io/prod.env
+            # Débogage
+            echo "Débogage : Contenu de prod.env..."
+            cat /home/ubuntu/xtracto-io/prod.env
 
-          # Tirer la nouvelle image
-          echo "Tirage de l'image Docker..."
-          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/xtracto-io:latest || { echo "Erreur pull image"; exit 1; }
-          
-          # Exécuter le conteneur avec le réseau
-          echo "Lancement du conteneur..."
-          docker network create xtracto-network || true
-          docker run -d --name xtracto-container \
-            --network xtracto-network \
-            -p 8002:8002 \
-            -v /home/ubuntu/xtracto-io:/app/src/environment \
-            -e ENVIRONMENT=prod \
-            -e KAMELEO_HOST=192.168.122.33 \
-            -e KAMELEO_PORT=5001 \
-            ${{ secrets.DOCKERHUB_USERNAME }}/xtracto-io:latest || { echo "Erreur lancement conteneur"; exit 1; }
-          
-          # Vérifier le conteneur
-          echo "Vérification du conteneur..."
-          docker ps -a | grep xtracto-container || { echo "Conteneur non démarré"; exit 1; }
-          echo "Déploiement terminé avec succès"
+            # Tirer la nouvelle image
+            echo "Tirage de l'image Docker..."
+            docker pull ${{ secrets.DOCKERHUB_USERNAME }}/xtracto-io:latest || { echo "Erreur pull image"; exit 1; }
+            
+            # Exécuter le conteneur avec le réseau
+            echo "Lancement du conteneur..."
+            docker network create xtracto-network || true
+            docker run -d --name xtracto-container \
+              --network xtracto-network \
+              -p 8002:8002 \
+              -v /home/ubuntu/xtracto-io:/app/src/environment \
+              -e ENVIRONMENT=$ENVIRONMENT \
+              -e KAMELEO_HOST=192.168.122.33 \
+              -e KAMELEO_PORT=5001 \
+              ${{ secrets.DOCKERHUB_USERNAME }}/xtracto-io:latest || { echo "Erreur lancement conteneur"; exit 1; }
+            
+            # Vérifier le conteneur
+            echo "Vérification du conteneur..."
+            docker ps -a | grep xtracto-container || { echo "Conteneur non démarré"; exit 1; }
+            echo "Déploiement terminé avec succès"
