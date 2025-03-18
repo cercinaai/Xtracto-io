@@ -12,6 +12,7 @@ from datetime import datetime
 import random
 import asyncio
 from loguru import logger
+import pymongo.errors
 
 TARGET_API_URL = "https://api.leboncoin.fr/finder/search"
 total_scraped = 0
@@ -103,16 +104,26 @@ async def process_ad(ad: dict) -> None:
         scraped_at=datetime.utcnow()
     )
 
-    try:
-        await save_annonce_to_db(annonce_data)
-        total_scraped += 1
-        logger.info(f"✅ Annonce enregistrée dans realState : {annonce_id} - Total extrait : {total_scraped}")
-        if idAgence:
-            source_db = get_source_db()
-            await source_db["realStateWithAgence"].insert_one(annonce_data.dict())
-            logger.info(f"✅ Annonce {annonce_id} avec idAgence {idAgence} enregistrée dans realStateWithAgence")
-    except Exception as e:
-        logger.error(f"❌ Erreur lors de l'enregistrement de {annonce_id} : {e}")
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            await save_annonce_to_db(annonce_data)
+            total_scraped += 1
+            logger.info(f"✅ Annonce enregistrée dans realState : {annonce_id} - Total extrait : {total_scraped}")
+            if idAgence:
+                source_db = get_source_db()
+                await source_db["realStateWithAgence"].insert_one(annonce_data.dict())
+                logger.info(f"✅ Annonce {annonce_id} avec idAgence {idAgence} enregistrée dans realStateWithAgence")
+            break
+        except pymongo.errors.OperationFailure as e:
+            logger.error(f"❌ Erreur MongoDB lors de l'enregistrement de {annonce_id} (tentative {attempt + 1}/{max_retries}) : {e.details}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(random.uniform(2, 5))
+            else:
+                raise
+        except Exception as e:
+            logger.error(f"❌ Erreur inattendue lors de l'enregistrement de {annonce_id} : {e}")
+            raise
 
 # Le reste du code reste inchangé (get_latest_valid_api_response, handle_no_results, scrape_listings_via_api)
 async def get_latest_valid_api_response(api_responses: list) -> dict | None:

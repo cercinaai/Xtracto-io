@@ -1,39 +1,42 @@
+import os
 from motor.motor_asyncio import AsyncIOMotorClient
-from src.config.settings import MONGO_URI
 from loguru import logger
 
-source_client = None
-destination_client = None
-source_db = None
-destination_db = None
+# Charger l'URI depuis les variables d'environnement
+MONGO_URI = os.getenv("MONGO_URI")
+
+# Initialisation des variables globales
+mongo_client = None
+database = None
 
 async def init_db():
-    global source_client, destination_client, source_db, destination_db
+    """Initialisation de la connexion à MongoDB."""
+    global mongo_client, database
     try:
-        # Utilisation du même URI pour source et destination
-        source_client = AsyncIOMotorClient(MONGO_URI)
-        destination_client = AsyncIOMotorClient(MONGO_URI)
-        source_db = source_client["xtracto-io-prod"]
-        destination_db = destination_client["xtracto-io-prod"]
-        logger.success("✅ Connexion aux bases MongoDB établie")
+        if not MONGO_URI:
+            raise ValueError("❌ MONGO_URI n'est pas défini dans les variables d'environnement")
+        
+        # Connexion à MongoDB
+        mongo_client = AsyncIOMotorClient(MONGO_URI)
+        
+        # Extraire le nom de la base depuis l'URI
+        db_name = MONGO_URI.split("/")[-1].split("?")[0]
+        database = mongo_client[db_name]
+
+        logger.success(f"✅ Connexion à MongoDB établie avec la base '{db_name}'")
     except Exception as e:
         logger.critical(f"🚨 Erreur de connexion MongoDB : {e}")
         raise SystemExit(1)
 
 async def close_db():
-    global source_client, destination_client
-    if source_client:
-        source_client.close()
-    if destination_client:
-        destination_client.close()
-    logger.info("🔌 Connexions MongoDB fermées")
+    """Fermeture propre de la connexion MongoDB."""
+    global mongo_client
+    if mongo_client:
+        mongo_client.close()
+        logger.info("🔌 Connexion MongoDB fermée")
 
-def get_source_db():
-    if source_db is None:
-        raise RuntimeError("Base source non initialisée")
-    return source_db
-
-def get_destination_db():
-    if destination_db is None:
-        raise RuntimeError("Base destination non initialisée")
-    return destination_db
+def get_db():
+    """Retourne l'instance de la base de données."""
+    if database is None:
+        raise RuntimeError("❌ La base de données n'est pas initialisée")
+    return database
