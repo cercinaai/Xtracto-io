@@ -1,5 +1,5 @@
 from motor.motor_asyncio import AsyncIOMotorClient
-from src.config.settings import MONGO_URI_SOURCE, MONGO_URI_DEST
+from src.config.settings import MONGO_URI
 from loguru import logger
 
 source_client = None
@@ -10,9 +10,9 @@ destination_db = None
 async def init_db():
     global source_client, destination_client, source_db, destination_db
     try:
-        source_client = AsyncIOMotorClient(MONGO_URI_SOURCE)
+        source_client = AsyncIOMotorClient(MONGO_URI)
         source_db = source_client["xtracto-io-prod"]
-        destination_client = AsyncIOMotorClient(MONGO_URI_DEST)
+        destination_client = AsyncIOMotorClient(MONGO_URI)
         destination_db = destination_client["xtracto-io-prod"]
         logger.success("✅ Connexion aux bases MongoDB établie")
     except Exception as e:
