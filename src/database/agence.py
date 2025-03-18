@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from typing import Optional
 from loguru import logger
-from src.database.database import get_db
+from src.database.database import get_source_db, get_destination_db
 
 class AgenceModel(BaseModel):
     storeId: str
@@ -16,8 +16,8 @@ class AgenceModel(BaseModel):
     description: Optional[str] = None
 
 async def transfer_agence(storeId: str, name: Optional[str] = None) -> Optional[str]:
-    source_db = get_db()
-    dest_db = get_db()
+    source_db = get_source_db()
+    dest_db = get_destination_db()
     source_collection = source_db["agences"]
     dest_collection = dest_db["agences"]
 
@@ -49,7 +49,7 @@ async def transfer_agence(storeId: str, name: Optional[str] = None) -> Optional[
     return str(result.inserted_id)
 
 async def get_or_create_agence(store_id: str, store_name: str, store_logo: Optional[str] = None) -> str:
-    source_db = get_db()
+    source_db = get_source_db()
     agences_collection = source_db["agencesBrute"]
 
     existing_agence = await agences_collection.find_one({"storeId": store_id, "name": store_name})

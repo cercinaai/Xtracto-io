@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Dict
 from datetime import datetime
 from loguru import logger
-from src.database.database import get_db
+from src.database.database import get_source_db, get_destination_db
 
 class RealState(BaseModel):
     idSec: str
@@ -68,7 +68,7 @@ class RealState(BaseModel):
         extra = "ignore"
 
 async def save_annonce_to_db(annonce: RealState) -> bool:
-    db = get_db()
+    db = get_source_db()
     collection = db["realState"]
     if await annonce_exists_by_unique_key(annonce.idSec, annonce.title, annonce.price):
         logger.info(f"ℹ️ Annonce {annonce.idSec} déjà existante dans la base source")
@@ -79,18 +79,18 @@ async def save_annonce_to_db(annonce: RealState) -> bool:
     return True
 
 async def annonce_exists(annonce_id: str) -> bool:
-    db = get_db()
+    db = get_source_db()
     collection = db["realState"]
     return await collection.find_one({"idSec": annonce_id}) is not None
 
 async def annonce_exists_by_unique_key(idSec: str, title: str, price: float) -> bool:
-    db = get_db()
+    db = get_source_db()
     collection = db["realState"]
     query = {"idSec": idSec, "title": title, "price": price}
     return await collection.find_one(query) is not None
 
 async def update_annonce_images(annonce_id: str, images: List[str], nbrImages: int) -> bool:
-    db = get_db()
+    db = get_source_db()
     collection = db["realState"]
     result = await collection.update_one(
         {"idSec": annonce_id},
@@ -103,8 +103,8 @@ async def update_annonce_images(annonce_id: str, images: List[str], nbrImages: i
     return False
 
 async def transfer_annonce(annonce: Dict) -> bool:
-    source_db = get_db()
-    dest_db = get_db()
+    source_db = get_source_db()
+    dest_db = get_destination_db()
     source_collection = source_db["realState"]
     dest_collection = dest_db["realState"]
     existing = await dest_collection.find_one({"idSec": annonce["idSec"], "title": annonce["title"], "price": annonce["price"]})

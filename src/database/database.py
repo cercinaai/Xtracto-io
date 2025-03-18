@@ -1,61 +1,38 @@
-import os
-from urllib.parse import quote_plus
 from motor.motor_asyncio import AsyncIOMotorClient
+from src.config.settings import MONGO_URI_SOURCE, MONGO_URI_DEST
 from loguru import logger
 
-# Charger l'URI depuis les variables d'environnement
-MONGO_URI = os.getenv("MONGO_URI")
-
-# Vérifier que l'URI est bien définie
-if not MONGO_URI:
-    raise ValueError("❌ MONGO_URI n'est pas défini dans les variables d'environnement")
-
-# Vérifier si les identifiants contiennent des caractères spéciaux et les encoder si nécessaire
-if "@" in MONGO_URI:
-    user_info, rest = MONGO_URI.split("@", 1)
-    user_info = user_info.replace("mongodb://", "")
-    
-    # Extraire user et password, puis les encoder
-    if ":" in user_info:
-        username, password = user_info.split(":", 1)
-        username = quote_plus(username)
-        password = quote_plus(password)
-        encoded_user_info = f"mongodb://{username}:{password}@"
-    else:
-        encoded_user_info = f"mongodb://{quote_plus(user_info)}@"
-
-    MONGO_URI = encoded_user_info + rest
-    logger.info("🔐 URI MongoDB encodée avec succès")
-
-# Initialisation des variables globales
-mongo_client = None
-database = None
+source_client = None
+destination_client = None
+source_db = None
+destination_db = None
 
 async def init_db():
-    """Initialisation de la connexion à MongoDB."""
-    global mongo_client, database
+    global source_client, destination_client, source_db, destination_db
     try:
-        # Connexion à MongoDB
-        mongo_client = AsyncIOMotorClient(MONGO_URI)
-
-        # Extraire le nom de la base depuis l'URI
-        db_name = MONGO_URI.split("/")[-1].split("?")[0]
-        database = mongo_client[db_name]
-
-        logger.success(f"✅ Connexion à MongoDB établie avec la base '{db_name}'")
+        source_client = AsyncIOMotorClient(MONGO_URI_SOURCE)
+        source_db = source_client["xtracto-io-prod"]
+        destination_client = AsyncIOMotorClient(MONGO_URI_DEST)
+        destination_db = destination_client["xtracto-io-prod"]
+        logger.success("✅ Connexion aux bases MongoDB établie")
     except Exception as e:
         logger.critical(f"🚨 Erreur de connexion MongoDB : {e}")
         raise SystemExit(1)
 
 async def close_db():
-    """Fermeture propre de la connexion MongoDB."""
-    global mongo_client
-    if mongo_client:
-        mongo_client.close()
-        logger.info("🔌 Connexion MongoDB fermée")
+    global source_client, destination_client
+    if source_client:
+        source_client.close()
+    if destination_client:
+        destination_client.close()
+    logger.info("🔌 Connexions MongoDB fermées")
 
-def get_db():
-    """Retourne l'instance de la base de données."""
-    if database is None:
-        raise RuntimeError("❌ La base de données n'est pas initialisée")
-    return database
+def get_source_db():
+    if source_db is None:
+        raise RuntimeError("Base source non initialisée")
+    return source_db
+
+def get_destination_db():
+    if destination_db is None:
+        raise RuntimeError("Base destination non initialisée")
+    return destination_db

@@ -1,12 +1,12 @@
 import asyncio
-from src.database.database import init_db, close_db, get_db
+from src.database.database import init_db, close_db, get_source_db
 from src.database.realState import RealState, annonce_exists, save_annonce_to_db
 from src.database.agence import transfer_agence
 from loguru import logger
 
 async def traite_annonces():
     await init_db()
-    source_db = get_db()
+    source_db = get_source_db()
     
     # Récupérer les annonces brutes avec storeId et agenceName
     query = {
