@@ -1,13 +1,13 @@
 import asyncio
 from typing import List, Dict
 from urllib.parse import urlparse
-from src.database.realState import RealStateLBCModel, update_annonce_images, transfer_annonce
+from src.database.realState import RealState, update_annonce_images, transfer_annonce
 from src.database.agence import transfer_agence
 from src.utils.b2_utils import upload_image_to_b2
 from src.database.database import get_source_db
 from loguru import logger
 from datetime import datetime
-
+from src.database.database import init_db, close_db, get_source_db, get_destination_db
 async def transfer_processed_annonces(max_concurrent_tasks: int = 20) -> Dict:
     source_db = get_source_db()
     query = {
@@ -46,16 +46,18 @@ async def transfer_processed_annonces(max_concurrent_tasks: int = 20) -> Dict:
     return {"transferred": transferred_count}
 
 async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
+    await init_db()
     source_db = get_source_db()
     query = {
         "idAgence": {"$exists": True},
         "images": {"$not": {"$elemMatch": {"$regex": "https://f003.backblazeb2.com"}}}
     }
-    annonces = await source_db["realStateLbc"].find(query).to_list(length=None)
+    annonces = await source_db["realStateWithAgence"].find(query).to_list(length=None)
     total_annonces = len(annonces)
     logger.info(f"📸 {total_annonces} annonces avec idAgence à traiter")
 
     if total_annonces == 0:
+        await close_db()
         return {"processed": 0}
 
     processed_count = 0
@@ -74,6 +76,7 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
     tasks = [process_annonce_wrapper(annonce) for annonce in annonces]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     processed_count = sum(1 for res in results if res is True)
+    await close_db()
     logger.info(f"✅ {processed_count} annonces traitées et transférées")
     return {"processed": processed_count}
 
@@ -90,32 +93,22 @@ async def process_annonce_images(annonce: Dict, annonce_id: str, image_urls: Lis
         updated_image_urls = [url if isinstance(url, str) else "N/A" for url in uploaded_urls]
 
         # Mettre à jour les images dans la base source
-        await update_annonce_images(annonce_id, updated_image_urls, len(updated_image_urls))
-
-        # Récupérer l'annonce complète depuis la base source
         source_db = get_source_db()
-        full_annonce = await source_db["realStateLbc"].find_one({"idSec": annonce_id})
-        if not full_annonce:
-            logger.error(f"❌ Annonce {annonce_id} non trouvée dans la base source après mise à jour des images")
-            return None
+        await source_db["realStateWithAgence"].update_one(
+            {"idSec": annonce_id},
+            {"$set": {"images": updated_image_urls, "nbrImages": len(updated_image_urls), "scraped_at": datetime.utcnow()}}
+        )
 
-        # Mettre à jour les champs liés aux images dans l'annonce complète
-        full_annonce["images"] = updated_image_urls
-        full_annonce["nbrImages"] = len(updated_image_urls)
-        full_annonce["scraped_at"] = datetime.utcnow()
-
-        # Transférer l'agence associée en utilisant storeId ou idAgence
-        storeId = full_annonce.get("storeId")
-        idAgence = full_annonce.get("idAgence")
-        if storeId:
-            await transfer_agence(storeId, full_annonce.get("agenceName"))
-        elif idAgence:
-            await transfer_agence(idAgence, full_annonce.get("agenceName"))
-
-        # Transférer l'annonce complète avec tous ses attributs
-        await transfer_annonce(full_annonce)
-        return {"idSec": annonce_id, "images": updated_image_urls, "idAgence": idAgence}
+        # Transférer vers la base destination
+        annonce["images"] = updated_image_urls
+        annonce["nbrImages"] = len(updated_image_urls)
+        annonce["scraped_at"] = datetime.utcnow()
+        await transfer_annonce(annonce)
+        return {"idSec": annonce_id, "images": updated_image_urls}
 
     except Exception as e:
         logger.error(f"⚠️ Erreur pour annonce {annonce_id} : {e}")
         return None
+
+if __name__ == "__main__":
+    asyncio.run(process_and_transfer_images())

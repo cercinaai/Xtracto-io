@@ -4,7 +4,7 @@ from datetime import datetime
 from loguru import logger
 from src.database.database import get_source_db, get_destination_db
 
-class RealStateLBCModel(BaseModel):
+class RealState(BaseModel):
     idSec: str
     publication_date: Optional[datetime] = None
     index_date: Optional[datetime] = None
@@ -67,10 +67,10 @@ class RealStateLBCModel(BaseModel):
     class Config:
         extra = "ignore"
 
-async def save_annonce_to_db(annonce: RealStateLBCModel) -> bool:
+async def save_annonce_to_db(annonce: RealState) -> bool:
     db = get_source_db()
-    collection = db["realStateLbc"]
-    if await collection.find_one({"idSec": annonce.idSec}):
+    collection = db["realState"]
+    if await annonce_exists_by_unique_key(annonce.idSec, annonce.title, annonce.price):
         logger.info(f"ℹ️ Annonce {annonce.idSec} déjà existante dans la base source")
         return False
     annonce_dict = annonce.dict(exclude_unset=True)
@@ -80,12 +80,18 @@ async def save_annonce_to_db(annonce: RealStateLBCModel) -> bool:
 
 async def annonce_exists(annonce_id: str) -> bool:
     db = get_source_db()
-    collection = db["realStateLbc"]
+    collection = db["realState"]
     return await collection.find_one({"idSec": annonce_id}) is not None
+
+async def annonce_exists_by_unique_key(idSec: str, title: str, price: float) -> bool:
+    db = get_source_db()
+    collection = db["realState"]
+    query = {"idSec": idSec, "title": title, "price": price}
+    return await collection.find_one(query) is not None
 
 async def update_annonce_images(annonce_id: str, images: List[str], nbrImages: int) -> bool:
     db = get_source_db()
-    collection = db["realStateLbc"]
+    collection = db["realState"]
     result = await collection.update_one(
         {"idSec": annonce_id},
         {"$set": {"images": images, "nbrImages": nbrImages, "scraped_at": datetime.utcnow()}}
@@ -97,22 +103,19 @@ async def update_annonce_images(annonce_id: str, images: List[str], nbrImages: i
     return False
 
 async def transfer_annonce(annonce: Dict) -> bool:
-    """Transfère une annonce avec tous ses attributs et son _id original, met à jour les attributs manquants si elle existe."""
     source_db = get_source_db()
     dest_db = get_destination_db()
-    source_collection = source_db["realStateLbc"]
-    dest_collection = dest_db["realStateLbc"]
-
-    # Vérifier si l'annonce existe dans la destination par idSec
-    existing = await dest_collection.find_one({"idSec": annonce["idSec"]})
+    source_collection = source_db["realState"]
+    dest_collection = dest_db["realState"]
+    existing = await dest_collection.find_one({"idSec": annonce["idSec"], "title": annonce["title"], "price": annonce["price"]})
     if existing:
         update_data = {}
         for key, value in annonce.items():
-            if key != "_id" and (key not in existing or existing[key] is None):  # Exclure _id de la mise à jour
+            if key != "_id" and (key not in existing or existing[key] is None):
                 update_data[key] = value
         if update_data:
             result = await dest_collection.update_one(
-                {"idSec": annonce["idSec"]},
+                {"idSec": annonce["idSec"], "title": annonce["title"], "price": annonce["price"]},
                 {"$set": update_data}
             )
             if result.modified_count > 0:
@@ -121,7 +124,6 @@ async def transfer_annonce(annonce: Dict) -> bool:
         logger.info(f"ℹ️ Annonce {annonce['idSec']} déjà complète dans la destination")
         return False
     else:
-        # Conserver l'_id original et transférer tous les attributs
         if "_id" not in annonce:
             logger.warning(f"⚠️ Annonce {annonce['idSec']} sans _id dans la source, création sans _id spécifique")
         await dest_collection.insert_one(annonce)

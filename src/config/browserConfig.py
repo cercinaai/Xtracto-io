@@ -1,50 +1,93 @@
 import os
 from dotenv import load_dotenv
-from loguru import logger
+from kameleo.local_api_client import KameleoLocalApiClient
+from kameleo.local_api_client.builder_for_create_profile import BuilderForCreateProfile
+from kameleo.local_api_client.models import WebDriverSettings, WebglMetaSpoofingOptions, Server
+from playwright.async_api import async_playwright
+import logging
+import asyncio
+import random
 
-# Déterminer l'environnement (local par défaut)
-ENVIRONMENT = os.getenv("ENVIRONMENT", "local")
-ENV_PATH = f"src/environment/{'local' if ENVIRONMENT == 'local' else 'prod'}.env"
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
-# Charger les variables d'environnement
-load_dotenv(ENV_PATH)
-logger.info(f"📋 Chargement des variables d'environnement depuis {ENV_PATH}")
+SHIFTER_PROXIES = [
+    {"host": "hermes.p.shifter.io", "port": 10445},
+    {"host": "hermes.p.shifter.io", "port": 10446},
+    {"host": "hermes.p.shifter.io", "port": 10447},
+    {"host": "hermes.p.shifter.io", "port": 10448},
+    {"host": "hermes.p.shifter.io", "port": 10449}
+]
 
-# Variables MongoDB
-MONGO_URI_SOURCE = os.getenv("MONGO_URI_SOURCE")
-MONGO_URI_DEST = os.getenv("MONGO_URI_DEST")
+async def setup_browser():
+    kameleo_host = os.getenv("KAMELEO_HOST", "192.168.122.33")  # Valeur par défaut
+    kameleo_port = int(os.getenv("KAMELEO_PORT", 5001))         # Valeur par défaut
+    client = KameleoLocalApiClient(endpoint=f'http://{kameleo_host}:{kameleo_port}', retry_total=0)
 
-# Variables Backblaze B2 (remplacées par AWS_S3_* dans votre fichier original)
-B2_BUCKET_NAME = os.getenv("AWS_S3_BUCKET_NAME")
-B2_ENDPOINT = os.getenv("AWS_S3_ENDPOINT")
-B2_ACCESS_KEY = os.getenv("AWS_S3_ACCESS_KEY")
-B2_SECRET_KEY = os.getenv("AWS_S3_SECRET_KEY")
+    base_profiles = client.search_base_profiles(device_type='desktop', browser_product='chrome', language='en-us')
+    if not base_profiles:
+        raise Exception("Aucun profil de base Chrome trouvé")
 
-# Validation des variables critiques
-required_vars = {
-    "MONGO_URI_SOURCE": MONGO_URI_SOURCE,
-    "MONGO_URI_DEST": MONGO_URI_DEST,
-    "B2_BUCKET_NAME": B2_BUCKET_NAME,
-    "B2_ACCESS_KEY": B2_ACCESS_KEY,
-    "B2_SECRET_KEY": B2_SECRET_KEY,
-}
+    selected_proxy = random.choice(SHIFTER_PROXIES)
+    proxy_host = selected_proxy["host"]
+    proxy_port = selected_proxy["port"]
 
-for var_name, var_value in required_vars.items():
-    if not var_value:
-        logger.critical(f"❌ La variable d'environnement {var_name} n'est pas définie dans {ENV_PATH}")
-        raise ValueError(f"Variable {var_name} manquante")
+    logger.info(f"🌐 Proxy Shifter sélectionné : {proxy_host}:{proxy_port}")
 
-# Variables optionnelles (non critiques pour l'upload d'images, mais utiles pour d'autres fonctionnalités)
-IP_ROYAL_PROXY_HOST = os.getenv("IP_ROYAL_PROXY_HOST")
-IP_ROYAL_PROXY_PORT = os.getenv("IP_ROYAL_PROXY_PORT")
-IP_ROYAL_PROXY_USER = os.getenv("IP_ROYAL_PROXY_USER")
-IP_ROYAL_PROXY_PASS_BASE = os.getenv("IP_ROYAL_PROXY_PASS_BASE")
-TWO_CAPTCHA_API_KEY = os.getenv("TWO_CAPTCHA_API_KEY")
-CAPSOLVER_API_KEY = os.getenv("CAPSOLVER_API_KEY")
+    create_profile_request = (
+        BuilderForCreateProfile
+        .for_base_profile(base_profiles[0].id)
+        .set_name(f'profile_{random.randint(1000, 9999)}')
+        .set_recommended_defaults()
+        .set_proxy('socks5', Server(
+            host=proxy_host,
+            port=proxy_port
+        ))
+        .set_webgl_meta('manual', WebglMetaSpoofingOptions(
+            vendor='Google Inc.',
+            renderer='ANGLE (Intel(R) HD Graphics 630 Direct3D11 vs_5_0 ps_5_0)'
+        ))
+        .set_start_page("https://kameleo.io")
+        .set_password_manager("enabled")
+        .build()
+    )
 
-# Logs pour confirmer les variables chargées (valeurs masquées pour la sécurité)
-logger.info("✅ Variables d'environnement chargées avec succès")
-logger.debug(f"Environment: {ENVIRONMENT}")
-logger.debug(f"MongoDB Source: {MONGO_URI_SOURCE}")
-logger.debug(f"MongoDB Dest: {MONGO_URI_DEST}")
-logger.debug(f"B2 Bucket: {B2_BUCKET_NAME}")
+    profile = client.create_profile(body=create_profile_request)
+    logger.info(f"Profil Kameleo créé avec ID : {profile.id}")
+
+    client.start_profile_with_options(
+        profile.id,
+        WebDriverSettings(arguments=["headless", "--disable-gpu", "--no-sandbox", "--disable-images", "--disable-media-session-api"])
+    )
+
+    playwright = await async_playwright().start()
+    browser_ws_endpoint = f'ws://{kameleo_host}:{kameleo_port}/playwright/{profile.id}'
+    browser = await playwright.chromium.connect_over_cdp(endpoint_url=browser_ws_endpoint)
+    context = browser.contexts[0]
+    return browser, context, client, profile.id, playwright
+
+async def cleanup_browser(client, profile_id, playwright, browser):
+    try:
+        if client and profile_id:
+            client.stop_profile(profile_id)
+            logger.info("Profil Kameleo arrêté")
+        if browser:
+            await browser.close()
+        if playwright:
+            await playwright.stop()
+            logger.info("Playwright arrêté")
+    except Exception as e:
+        logger.error(f"⚠️ Erreur lors du nettoyage : {e}")
+
+async def main():
+    browser, context, client, profile_id, playwright = await setup_browser()
+    try:
+        page = context.pages[0]
+        await page.goto("https://example.com")
+        logger.info("Navigateur démarré avec succès avec le proxy Shifter en mode headless")
+    finally:
+        await cleanup_browser(client, profile_id, playwright, browser)
+
+if __name__ == "__main__":
+    asyncio.run(main())

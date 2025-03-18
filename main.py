@@ -7,6 +7,22 @@ from src.database.database import init_db, close_db
 from loguru import logger
 import uvicorn
 from contextlib import asynccontextmanager
+import os
+
+# Configuration des logs
+if not os.path.exists("logs/leboncoin"):
+    os.makedirs("logs/leboncoin")
+if not os.path.exists("logs/capture/leboncoin"):
+    os.makedirs("logs/capture/leboncoin")
+
+logger.remove()  # Supprime la configuration par défaut
+logger.add(
+    "logs/leboncoin/leboncoin_{time:YYYY-MM-DD}.log",
+    rotation="1 day",
+    retention="7 days",
+    level="INFO",
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
+)
 
 if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -16,7 +32,7 @@ async def lifespan(app: FastAPI):
     try:
         await init_db()
         logger.success("✅ Connexion aux bases de données établie avec succès")
-        logger.info("🚀 Serveur démarré sur http://0.0.0.0:8002")
+        logger.info("🚀 Serveur démarré sur http://0.0.0.0:8000")
     except Exception as e:
         logger.critical(f"🚨 Erreur critique au démarrage : {e}")
         raise SystemExit(1)
@@ -51,8 +67,9 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8002,
+        port=8000,
         log_level="info",
         workers=2,
-        timeout_keep_alive=120
+        timeout_keep_alive=120,
+        reload=True
     )
