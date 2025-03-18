@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 from src.database.realState import RealState, update_annonce_images, transfer_annonce
 from src.database.agence import transfer_agence
 from src.utils.b2_utils import upload_image_to_b2
-from src.database.database import get_db
+from src.database.database import get_source_db
 from loguru import logger
 from datetime import datetime
 from src.database.database import init_db, close_db, get_source_db, get_destination_db
