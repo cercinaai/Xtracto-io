@@ -7,7 +7,7 @@ from src.scrapers.leboncoin.utils.human_behavorScrapperLbc import (
 )
 from src.database.realState import RealState, annonce_exists_by_unique_key, save_annonce_to_db
 from src.database.agence import get_or_create_agence
-from src.database.database import get_source_db
+from src.database.database import get_db
 from datetime import datetime
 import random
 import asyncio
@@ -108,7 +108,7 @@ async def process_ad(ad: dict) -> bool:
         total_scraped += 1
         logger.info(f"✅ Annonce enregistrée dans realState : {annonce_id} - Total extrait : {total_scraped}")
         if idAgence:
-            source_db = get_source_db()
+            source_db = get_db()
             await source_db["realStateWithAgence"].insert_one(annonce_data.dict())
             logger.info(f"✅ Annonce {annonce_id} avec idAgence {idAgence} enregistrée dans realStateWithAgence")
         return False  # Nouvelle annonce
