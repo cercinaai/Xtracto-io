@@ -80,14 +80,6 @@ jobs:
             
             # Créer prod.env avec les variables encodées
             echo "Création du fichier prod.env..."
-            echo "ENVIRONMENT=$ENVIRONMENT" > /home/ubuntu/xtracto-io/prod.env
-            echo "MONGO_URI=$MONGO_URI" >> /home/ubuntu/xtracto-io/prod.env
-            echo "AWS_S3_BUCKET_NAME=$AWS_S3_BUCKET_NAME" >> /home/ubuntu/xtracto-io/prod.env
-            echo "AWS_S3_ENDPOINT=$AWS_S3_ENDPOINT" >> /home/ubuntu/xtracto-io/prod.env
-            echo "AWS_S3_ACCESS_KEY=$AWS_S3_ACCESS_KEY" >> /home/ubuntu/xtracto-io/prod.env
-            echo "AWS_S3_SECRET_KEY=$AWS_S3_SECRET_KEY" >> /home/ubuntu/xtracto-io/prod.env
-            echo "KAMELEO_HOST=192.168.122.33" >> /home/ubuntu/xtracto-io/prod.env
-            echo "KAMELEO_PORT=5001" >> /home/ubuntu/xtracto-io/prod.env
             chown ubuntu:ubuntu /home/ubuntu/xtracto-io/prod.env
             chmod 600 /home/ubuntu/xtracto-io/prod.env
 
