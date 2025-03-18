@@ -52,11 +52,11 @@ jobs:
           script_stop: true
           debug: true
           env: # Passer les secrets comme variables d'environnement
-            MONGO_URI: ${{ secrets.MONGO_URI }}
-            AWS_S3_BUCKET_NAME: ${{ secrets.AWS_S3_BUCKET_NAME }}
-            AWS_S3_ENDPOINT: ${{ secrets.AWS_S3_ENDPOINT }}
-            AWS_S3_ACCESS_KEY: ${{ secrets.AWS_S3_ACCESS_KEY }}
-            AWS_S3_SECRET_KEY: ${{ secrets.AWS_S3_SECRET_KEY }}
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+          AWS_S3_BUCKET_NAME: ${{ secrets.AWS_S3_BUCKET_NAME }}
+          AWS_S3_ENDPOINT: ${{ secrets.AWS_S3_ENDPOINT }}
+          AWS_S3_ACCESS_KEY: ${{ secrets.AWS_S3_ACCESS_KEY }}
+          AWS_S3_SECRET_KEY: ${{ secrets.AWS_S3_SECRET_KEY }}
           script: |
             echo "Démarrage du script de déploiement"
             # Vérifier la connexion SSH avec un message détaillé
