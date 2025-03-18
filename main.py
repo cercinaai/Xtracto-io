@@ -8,7 +8,7 @@ from loguru import logger
 import uvicorn
 from contextlib import asynccontextmanager
 import os
-
+import sys
 # Configuration des logs
 if not os.path.exists("logs/leboncoin"):
     os.makedirs("logs/leboncoin")
@@ -16,14 +16,20 @@ if not os.path.exists("logs/capture/leboncoin"):
     os.makedirs("logs/capture/leboncoin")
 
 logger.remove()  # Supprime la configuration par défaut
+
+logger.add(sys.stdout, level="DEBUG")  # Affiche tout dans la console
 logger.add(
     "logs/leboncoin/leboncoin_{time:YYYY-MM-DD}.log",
     rotation="1 day",
     retention="7 days",
-    level="INFO",
+    level="DEBUG",  # Niveau DEBUG pour tout capturer
     format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
 )
-
+if not os.path.exists("logs/leboncoin"):
+    os.makedirs("logs/leboncoin")
+if not os.path.exists("logs/capture/leboncoin"):
+    os.makedirs("logs/capture/leboncoin")
+    
 if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
