@@ -51,7 +51,7 @@ jobs:
           timeout: 60s
           script_stop: true
           debug: true
-          env:
+        env:
           ENVIRONMENT: prod
           MONGO_URI: ${{ secrets.MONGO_URI }}
           AWS_S3_BUCKET_NAME: ${{ secrets.AWS_S3_BUCKET_NAME }}
@@ -112,4 +112,3 @@ jobs:
             echo "Vérification du conteneur..."
             docker ps -a | grep xtracto-container || { echo "Conteneur non démarré"; exit 1; }
             echo "Déploiement terminé avec succès"
-            
