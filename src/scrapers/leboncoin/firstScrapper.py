@@ -25,20 +25,8 @@ async def check_and_solve_captcha(page: Page, action: str) -> bool:
     return True
 
 def run_open_leboncoin(queue):
-    class QueueHandler:
-        def __init__(self, queue):
-            self.queue = queue
-
-        def write(self, message):
-            self.queue.put(message)
-
-        def flush(self):
-            pass
-
-    handler = QueueHandler(queue)
-    logger.add(handler, level="DEBUG")
     asyncio.run(open_leboncoin(queue))
-    
+
 async def open_leboncoin(queue: Queue):
     logger.info("🚀 Démarrage du scraping...")
     max_retries = 1
@@ -58,8 +46,6 @@ async def open_leboncoin(queue: Queue):
     for attempt in range(max_retries):
         page = None
         try:
-            message = queue.get_nowait()
-            print(message)
             page = await context.new_page()
             api_responses = []
 
