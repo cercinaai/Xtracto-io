@@ -4,12 +4,12 @@ from urllib.parse import urlparse
 from src.database.realState import RealState, update_annonce_images, transfer_annonce
 from src.database.agence import transfer_agence
 from src.utils.b2_utils import upload_image_to_b2
-from src.database.database import get_source_db
+from src.database.database import get_db
 from loguru import logger
 from datetime import datetime
-from src.database.database import init_db, close_db, get_source_db, get_destination_db
+from src.database.database import init_db, close_db, get_db
 async def transfer_processed_annonces(max_concurrent_tasks: int = 20) -> Dict:
-    source_db = get_source_db()
+    source_db = get_db()
     query = {
         "images": {"$elemMatch": {"$regex": "^https://f003\\.backblazeb2\\.com/file/cercina-real-estate-files"}},
         "idAgence": {"$exists": True}
@@ -47,7 +47,7 @@ async def transfer_processed_annonces(max_concurrent_tasks: int = 20) -> Dict:
 
 async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
     await init_db()
-    source_db = get_source_db()
+    source_db = get_db()
     query = {
         "idAgence": {"$exists": True},
         "images": {"$not": {"$elemMatch": {"$regex": "https://f003.backblazeb2.com"}}}
@@ -93,7 +93,7 @@ async def process_annonce_images(annonce: Dict, annonce_id: str, image_urls: Lis
         updated_image_urls = [url if isinstance(url, str) else "N/A" for url in uploaded_urls]
 
         # Mettre à jour les images dans la base source
-        source_db = get_source_db()
+        source_db = get_db()
         await source_db["realStateWithAgence"].update_one(
             {"idSec": annonce_id},
             {"$set": {"images": updated_image_urls, "nbrImages": len(updated_image_urls), "scraped_at": datetime.utcnow()}}
