@@ -35,15 +35,17 @@ jobs:
 
       # Étape 5 : Déployer sur le VPS via SSH avec mot de passe
       - name: Deploy to VPS
-        uses: appleboy/ssh-action@v0.1.10
+        uses: appleboy/ssh-action@v1.0.3  # Version plus récente
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USERNAME }}
-          password: ${{ secrets.VPS_PASSWORD }}  # Utilisation du mot de passe
-          port: 22
-          timeout: 30s  # Ajout d’un timeout pour éviter les déconnexions
-          script_stop: true  # Arrête le script en cas d’erreur
+          password: ${{ secrets.VPS_PASSWORD }}
+          port: 22  # Mettez à jour si nécessaire
+          timeout: 60s  # Augmenté pour plus de fiabilité
+          script_stop: true
+          debug: true  # Ajouté pour plus de logs
           script: |
+            echo "Démarrage du script de déploiement"
             # Vérifier la connexion SSH
             whoami || { echo "Erreur SSH"; exit 1; }
             
@@ -90,3 +92,4 @@ jobs:
             
             # Vérifier que le conteneur est en cours d’exécution
             docker ps -a | grep xtracto-container || { echo "Conteneur non démarré"; exit 1; }
+            echo "Déploiement terminé avec succès"
