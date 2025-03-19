@@ -112,7 +112,22 @@ async def navigate_to_locations(page, max_attempts=3):
                 await human_like_scroll_to_element_search(page, LOCATIONS_LINK, scroll_steps=2, jitter=True)
                 await locations_link.wait_for(state="visible", timeout=10000)
 
-            # Étape 4 : Cliquer sur le lien "Locations"
+            # Étape 4 : Vérifier les blocages anti-bot avant le clic
+            captcha_iframe = page.locator('iframe[title="DataDome CAPTCHA"]')
+            if await captcha_iframe.is_visible(timeout=3000):
+                logger.warning("⚠️ CAPTCHA détecté avant clic sur 'Locations', tentative de résolution...")
+                if not await solve_audio_captcha(page):
+                    logger.error("❌ Échec de la résolution du CAPTCHA avant clic sur 'Locations'.")
+                    raise Exception("Échec CAPTCHA avant clic sur Locations")
+                logger.info("✅ CAPTCHA résolu, reprise de la navigation...")
+
+            # Vérifier si une erreur de blocage est affichée
+            error_message = page.locator('text="Vous avez été bloqué"')
+            if await error_message.is_visible(timeout=3000):
+                logger.error("❌ Blocage anti-bot détecté par Leboncoin.")
+                raise Exception("Blocage anti-bot détecté avant clic sur Locations")
+
+            # Étape 5 : Cliquer sur le lien "Locations"
             await human_like_delay_search(0.5, 1.5)
             if not await check_and_solve_captcha(page, "clic sur Locations"):
                 raise Exception("Échec CAPTCHA avant clic sur Locations")
@@ -132,16 +147,20 @@ async def navigate_to_locations(page, max_attempts=3):
                 current_url = page.url
                 logger.info(f"🌐 URL après navigation JavaScript : {current_url}")
                 if EXPECTED_LOCATIONS_URL not in current_url:
+                    # Vérifier à nouveau les blocages anti-bot
+                    if await error_message.is_visible(timeout=3000):
+                        logger.error("❌ Blocage anti-bot détecté après navigation JavaScript.")
+                        raise Exception("Blocage anti-bot détecté après navigation JavaScript")
                     logger.error(f"❌ Échec de la navigation vers {EXPECTED_LOCATIONS_URL}")
                     await page.screenshot(path=f"navigation_error_attempt_{attempt}.png")
                     raise Exception(f"Navigation vers 'Locations' échouée, URL actuelle : {current_url}")
 
-            # Étape 5 : Vérifier Gimii après navigation
+            # Étape 6 : Vérifier Gimii après navigation
             gimii_reappeared = await close_gimii_popup(page)
             if gimii_reappeared:
                 logger.warning("⚠️ Popup Gimii réapparue sur la page 'Locations', fermée à nouveau.")
 
-            # Étape 6 : Attente du chargement avec une condition moins stricte
+            # Étape 7 : Attente du chargement avec une condition moins stricte
             logger.info("⏳ Attente du chargement complet de la page 'Locations'...")
             await page.wait_for_load_state("domcontentloaded", timeout=30000)
 
@@ -163,7 +182,6 @@ async def navigate_to_locations(page, max_attempts=3):
             if attempt == max_attempts:
                 logger.error("❌ Échec après toutes les tentatives.")
                 raise
-            await page.reload()
             await human_like_delay_search(5, 10)
             await wait_for_page_load(page)
 
