@@ -2,22 +2,25 @@ import logging
 from src.captcha.captchaSolver import solve_audio_captcha
 from playwright.async_api import Page, TimeoutError, Response
 from src.scrapers.leboncoin.utils.human_behavorScrapperLbc import (
-    human_like_click_search, human_like_scroll_to_element, human_like_delay,
-    human_like_exploration, simulate_reading
+    human_like_click_search,
+    human_like_scroll_to_element,
+    human_like_delay,
+    human_like_exploration,
+    simulate_reading
 )
-from src.database.realState import RealState, annonce_exists_by_unique_key, save_annonce_to_db
+from src.database.realState import RealState, annonce_exists, save_annonce_to_db
 from src.database.agence import get_or_create_agence
 from src.database.database import get_source_db
 from datetime import datetime
 import random
 import asyncio
 from loguru import logger
-import pymongo.errors
 
 TARGET_API_URL = "https://api.leboncoin.fr/finder/search"
 total_scraped = 0
 
 async def check_and_solve_captcha(page: Page, action: str) -> bool:
+    """Vérifie et résout le CAPTCHA si présent avant une action."""
     captcha_selector = 'iframe[title="DataDome CAPTCHA"]'
     if await page.locator(captcha_selector).is_visible(timeout=3000):
         logger.warning(f"⚠️ CAPTCHA détecté avant {action}.")
@@ -37,12 +40,8 @@ async def get_attr_by_label(ad: dict, label: str, default=None, get_values: bool
 async def process_ad(ad: dict) -> None:
     global total_scraped
     annonce_id = str(ad.get("list_id"))
-    title = ad.get("subject")
-    price = ad.get("price", [None])[0] if isinstance(ad.get("price"), list) else ad.get("price")
-
-    # Vérifier l'existence avec idSec, title et price
-    if await annonce_exists_by_unique_key(annonce_id, title, price):
-        logger.info(f"⏭ Annonce {annonce_id} déjà existante (idSec, title, price).")
+    if await annonce_exists(annonce_id):
+        logger.info(f"⏭ Annonce {annonce_id} déjà existante.")
         return
 
     logger.debug(f"📋 Traitement de l'annonce {annonce_id}...")
@@ -60,12 +59,12 @@ async def process_ad(ad: dict) -> None:
         expiration_date=ad.get("expiration_date"),
         status=ad.get("status"),
         ad_type=ad.get("ad_type"),
-        title=title,
+        title=ad.get("subject"),
         description=ad.get("body"),
         url=ad.get("url"),
         category_id=ad.get("category_id"),
         category_name=ad.get("category_name"),
-        price=price,
+        price=(ad.get("price", [None])[0] if isinstance(ad.get("price"), list) else ad.get("price")),
         nbrImages=ad.get("images", {}).get("nb_images"),
         images=ad.get("images", {}).get("urls", []),
         typeBien=await get_attr_by_label(ad, "Type de bien"),
@@ -104,28 +103,20 @@ async def process_ad(ad: dict) -> None:
         scraped_at=datetime.utcnow()
     )
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            await save_annonce_to_db(annonce_data)
-            total_scraped += 1
-            logger.info(f"✅ Annonce enregistrée dans realState : {annonce_id} - Total extrait : {total_scraped}")
-            if idAgence:
-                source_db = get_source_db()
-                await source_db["realStateWithAgence"].insert_one(annonce_data.dict())
-                logger.info(f"✅ Annonce {annonce_id} avec idAgence {idAgence} enregistrée dans realStateWithAgence")
-            break
-        except pymongo.errors.OperationFailure as e:
-            logger.error(f"❌ Erreur MongoDB lors de l'enregistrement de {annonce_id} (tentative {attempt + 1}/{max_retries}) : {e.details}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(random.uniform(2, 5))
-            else:
-                raise
-        except Exception as e:
-            logger.error(f"❌ Erreur inattendue lors de l'enregistrement de {annonce_id} : {e}")
-            raise
+    try:
+        # Enregistrer dans la collection brute (realState)
+        await save_annonce_to_db(annonce_data)
+        total_scraped += 1
+        logger.info(f"✅ Annonce enregistrée dans realState : {annonce_id} - Total extrait : {total_scraped}")
 
-# Le reste du code reste inchangé (get_latest_valid_api_response, handle_no_results, scrape_listings_via_api)
+        # Si l'annonce a un idAgence, l'enregistrer dans realStateWithAgence
+        if idAgence:
+            source_db = get_source_db()
+            await source_db["realStateWithAgence"].insert_one(annonce_data.to_dict())
+            logger.info(f"✅ Annonce {annonce_id} avec idAgence {idAgence} enregistrée dans realStateWithAgence")
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de l'enregistrement de {annonce_id} : {e}")
+
 async def get_latest_valid_api_response(api_responses: list) -> dict | None:
     for response in reversed(api_responses):
         if "ads" in response and response["ads"]:
@@ -133,19 +124,25 @@ async def get_latest_valid_api_response(api_responses: list) -> dict | None:
     return None
 
 async def handle_no_results(page: Page, current_page: int) -> bool:
+    """Vérifie si le message 'Désolés, nous n’avons pas ça sous la main !' est affiché et gère le rechargement."""
     NO_RESULTS_SELECTOR = '[data-test-id="noErrorMainMessage"]'
     if await page.locator(NO_RESULTS_SELECTOR).is_visible(timeout=5000):
         logger.warning(f"⚠️ Message 'Désolés, nous n’avons pas ça sous la main !' détecté à la page {current_page + 1}.")
+        
+        # Recharger la page et vérifier le CAPTCHA
         logger.info("🔄 Rechargement de la page...")
         await page.reload(timeout=60000)
         if not await check_and_solve_captcha(page, "rechargement après message d'erreur"):
             logger.error("❌ Échec du CAPTCHA après rechargement.")
             return False
+        
+        # Revenir à la page précédente
         previous_page = current_page
         previous_page_selector = f'[data-spark-component="pagination-item"][aria-label="Page {previous_page}"]'
         logger.info(f"⏪ Retour à la page précédente ({previous_page})...")
         await human_like_scroll_to_element(page, previous_page_selector, scroll_steps=3, jitter=True)
         await human_like_click_search(page, previous_page_selector, move_cursor=True, click_delay=random.uniform(0.5, 1.5))
+        
         start_time = asyncio.get_event_loop().time()
         while asyncio.get_event_loop().time() - start_time < 15:
             if f"page={previous_page}" in page.url.lower():
@@ -155,6 +152,7 @@ async def handle_no_results(page: Page, current_page: int) -> bool:
         else:
             logger.error(f"❌ Échec du retour à la page {previous_page}.")
             return False
+        
         return True
     return False
 
@@ -163,7 +161,6 @@ async def scrape_listings_via_api(page: Page, api_responses: list, response_hand
     current_page = 1
     MAX_PAGES = 100
     PAGINATION_CONTAINER = 'nav[data-spark-component="pagination"] > ul'
-    MAX_RETRIES_PER_PAGE = 3
 
     logger.info("🌀 Début du scraping des annonces via API...")
     if initial_response:
@@ -176,86 +173,86 @@ async def scrape_listings_via_api(page: Page, api_responses: list, response_hand
         return
 
     logger.info("🎙️ Utilisation de l'écouteur API existant pour la pagination.")
+
     while current_page < MAX_PAGES:
         next_page_number = current_page + 1
         page_button_selector = f'[data-spark-component="pagination-item"][aria-label="Page {next_page_number}"]'
         page_button = page.locator(page_button_selector)
 
-        for retry in range(MAX_RETRIES_PER_PAGE):
-            try:
-                await human_like_exploration(page)
-                await simulate_reading(page)
-                await asyncio.sleep(random.uniform(1, 3))
+        await human_like_exploration(page)
+        await simulate_reading(page)
+        await asyncio.sleep(random.uniform(1, 3))
 
-                logger.info(f"📜 Défilement vers la pagination pour la page {next_page_number}...")
-                start_time = asyncio.get_event_loop().time()
-                while asyncio.get_event_loop().time() - start_time < 15:
-                    await human_like_scroll_to_element(page, PAGINATION_CONTAINER, scroll_steps=3, jitter=True)
-                    if await page_button.is_visible(timeout=1000):
-                        logger.info(f"✅ Bouton de la page {next_page_number} trouvé.")
-                        break
-                    await asyncio.sleep(0.5)
-                else:
-                    logger.info(f"🏁 Pagination non trouvée pour la page {next_page_number}. Vérification du message d'erreur...")
-                    if await handle_no_results(page, current_page):
-                        api_event = []
-                        api_found = False
-
-                        async def on_api_response_previous(response: Response) -> None:
-                            nonlocal api_found
-                            if response.url.startswith(TARGET_API_URL) and response.status == 200 and not api_found:
-                                json_response = await response.json()
-                                if "ads" in json_response and json_response["ads"]:
-                                    api_event.append(json_response)
-                                    api_found = True
-                                    for ad in json_response.get("ads", []):
-                                        await process_ad(ad)
-                                    logger.info(f"✅ Page {current_page}: {len(json_response['ads'])} annonces interceptées via API après retour.")
-
-                        def response_callback_previous(response):
-                            asyncio.create_task(on_api_response_previous(response))
-
-                        page.on("response", response_callback_previous)
-                        start_time = asyncio.get_event_loop().time()
-                        while asyncio.get_event_loop().time() - start_time < 15 and not api_found:
-                            await asyncio.sleep(0.5)
-                        page.remove_listener("response", response_callback_previous)
-                        if not api_found:
-                            logger.warning(f"⚠️ Pas de réponse API pour la page {current_page} après retour.")
-                    else:
-                        logger.info(f"🏁 Fin de la pagination à la page {current_page}.")
-                        break
-
-                if current_page >= MAX_PAGES:
-                    break
-
-                logger.info(f"🌀 Passage à la page {next_page_number}...")
+        logger.info(f"📜 Défilement vers la pagination pour la page {next_page_number}...")
+        start_time = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() - start_time < 15:
+            await human_like_scroll_to_element(page, PAGINATION_CONTAINER, scroll_steps=3, jitter=True)
+            if await page_button.is_visible(timeout=1000):
+                logger.info(f"✅ Bouton de la page {next_page_number} trouvé.")
+                break
+            await asyncio.sleep(0.5)
+        else:
+            logger.info(f"🏁 Pagination non trouvée pour la page {next_page_number}. Vérification du message d'erreur...")
+            if await handle_no_results(page, current_page):
+                # Si le rechargement et le retour à la page précédente réussissent, réécouter l'API pour la page actuelle
                 api_event = []
                 api_found = False
 
-                async def on_api_response(response: Response) -> None:
+                async def on_api_response_previous(response: Response) -> None:
                     nonlocal api_found
                     if response.url.startswith(TARGET_API_URL) and response.status == 200 and not api_found:
-                        try:
-                            json_response = await response.json()
-                            if "ads" in json_response and json_response["ads"]:
-                                api_event.append(json_response)
-                                api_found = True
-                                for ad in json_response.get("ads", []):
-                                    await process_ad(ad)
-                                logger.info(f"✅ Page {next_page_number}: {len(json_response['ads'])} annonces interceptées via API.")
-                        except Exception as e:
-                            logger.error(f"⚠️ Erreur lors du traitement de la réponse API pour la page {next_page_number} : {e}")
+                        json_response = await response.json()
+                        if "ads" in json_response and json_response["ads"]:
+                            api_event.append(json_response)
+                            api_found = True
+                            for ad in json_response.get("ads", []):
+                                await process_ad(ad)
+                            logger.info(f"✅ Page {current_page}: {len(json_response['ads'])} annonces interceptées via API après retour.")
 
-                def response_callback(response):
-                    asyncio.create_task(on_api_response(response))
+                def response_callback_previous(response):
+                    asyncio.create_task(on_api_response_previous(response))
 
-                page.on("response", response_callback)
+                page.on("response", response_callback_previous)
+                start_time = asyncio.get_event_loop().time()
+                while asyncio.get_event_loop().time() - start_time < 15 and not api_found:
+                    await asyncio.sleep(0.5)
+                page.remove_listener("response", response_callback_previous)
+                if not api_found:
+                    logger.warning(f"⚠️ Pas de réponse API pour la page {current_page} après retour.")
+            else:
+                logger.info(f"🏁 Fin de la pagination à la page {current_page}.")
+                break
+
+        logger.info(f"🌀 Passage à la page {next_page_number}...")
+        api_event = []
+        api_found = False
+
+        async def on_api_response(response: Response) -> None:
+            nonlocal api_found
+            if response.url.startswith(TARGET_API_URL) and response.status == 200 and not api_found:
+                try:
+                    json_response = await response.json()
+                    if "ads" in json_response and json_response["ads"]:
+                        api_event.append(json_response)
+                        api_found = True
+                        for ad in json_response.get("ads", []):
+                            await process_ad(ad)
+                        logger.info(f"✅ Page {next_page_number}: {len(json_response['ads'])} annonces interceptées via API.")
+                except Exception as e:
+                    logger.error(f"⚠️ Erreur lors du traitement de la réponse API pour la page {next_page_number} : {e}")
+
+        def response_callback(response):
+            asyncio.create_task(on_api_response(response))
+
+        page.on("response", response_callback)
+        max_retries = 1
+        for retry in range(max_retries):
+            try:
                 await human_like_exploration(page)
                 await asyncio.sleep(random.uniform(0.5, 2))
                 if not await check_and_solve_captcha(page, f"navigation vers page {next_page_number}"):
                     logger.error(f"❌ Échec CAPTCHA avant page {next_page_number}.")
-                    raise Exception("Échec CAPTCHA")
+                    break
 
                 await human_like_scroll_to_element(page, page_button_selector, scroll_steps=3, jitter=True)
                 await human_like_click_search(page, page_button_selector, move_cursor=True, click_delay=random.uniform(0.5, 1.5))
@@ -273,21 +270,17 @@ async def scrape_listings_via_api(page: Page, api_responses: list, response_hand
                     await asyncio.sleep(0.5)
                 if not api_found:
                     logger.warning(f"⚠️ Pas de réponse API pour la page {next_page_number}.")
-
-                page.remove_listener("response", response_callback)
-                current_page += 1
-                await asyncio.sleep(random.uniform(5, 15))
-                break  # Sortir de la boucle de retry si la navigation réussit
-
+                break
             except Exception as e:
-                logger.error(f"⚠️ Erreur page {next_page_number} (tentative {retry+1}/{MAX_RETRIES_PER_PAGE}): {e}")
-                if retry == MAX_RETRIES_PER_PAGE - 1:
-                    logger.error(f"❌ Échec après {MAX_RETRIES_PER_PAGE} tentatives pour la page {next_page_number}.")
-                    raise
-                await asyncio.sleep(random.uniform(2, 4))
+                logger.error(f"⚠️ Erreur page {next_page_number} (tentative {retry+1}/{max_retries}): {e}")
+                if retry < max_retries - 1:
+                    await asyncio.sleep(random.uniform(2, 4))
+
+        page.remove_listener("response", response_callback)
+        current_page += 1
+        await asyncio.sleep(random.uniform(5, 15))
 
     logger.info(f"🏁 Scraping terminé - Total annonces extraites : {total_scraped}")
-    # Le navigateur sera fermé dans open_leboncoin après cette fonction
 
 if __name__ == "__main__":
     logger.info("Module listings_parser chargé.")

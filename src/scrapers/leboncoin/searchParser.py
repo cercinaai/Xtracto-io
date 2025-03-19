@@ -74,194 +74,78 @@ async def wait_for_page_load(page):
     logger.error("⚠️ Timeout lors de l'attente du chargement de la page : lien 'Locations' non trouvé.")
     raise PlaywrightTimeoutError("Page non chargée dans le délai imparti")
 
-async def navigate_to_locations(page, max_attempts=3):
+async def navigate_to_locations(page):
     LOCATIONS_LINK = 'a[href="/c/locations"][title="Locations"]'
-    FILTERS_BUTTON = 'button[title="Afficher tous les filtres"]'
-    RESULTS_CONTAINER = '[data-test-id="listing-card"]'
     logger.info("🌀 Navigation vers 'Locations'...")
 
-    for attempt in range(1, max_attempts + 1):
-        try:
-            logger.info(f"🌀 Tentative {attempt}/{max_attempts} de navigation vers 'Locations'...")
+    # Étape 1 : Fermer la popup des cookies et attendre
+    await close_cookies_popup(page)
+    logger.info("⏳ Attente après fermeture des cookies...")
+    await human_like_delay_search(1, 2)
 
-            # Étape 1 : Fermer la popup des cookies et attendre
-            await close_cookies_popup(page)
-            logger.info("⏳ Attente après fermeture des cookies...")
-            await human_like_delay_search(1, 2)
+    # Étape 2 : Vérifier Gimii ; si non trouvé, scroller vers "Locations"
+    gimii_closed = await close_gimii_popup(page)
+    if not gimii_closed:
+        logger.info("📜 Défilement vers le lien 'Locations' car aucune popup Gimii détectée...")
+        await human_like_scroll_to_element_search(page, LOCATIONS_LINK, scroll_steps=random.randint(6, 10), jitter=True)
+    else:
+        logger.info("📜 Défilement supplémentaire après fermeture de Gimii pour atteindre 'Locations'...")
+        await human_like_scroll_to_element_search(page, LOCATIONS_LINK, scroll_steps=2, jitter=True)
 
-            # Étape 2 : Vérifier Gimii une seule fois avant de scroller
-            gimii_closed = await close_gimii_popup(page)
-            if gimii_closed:
-                logger.info("✅ Popup Gimii détectée et fermée avant défilement.")
-            else:
-                logger.info("✅ Aucune popup Gimii détectée avant défilement.")
+    # Étape 3 : Vérifier à nouveau Gimii avant de cliquer
+    locations_link = page.locator(LOCATIONS_LINK)
+    try:
+        await locations_link.wait_for(state="visible", timeout=30000)
+        logger.info("✅ Lien 'Locations' visible après défilement.")
+    except PlaywrightTimeoutError:
+        logger.error("❌ Lien 'Locations' non trouvé dans le délai imparti après défilement.")
+        await page.screenshot(path="locations_link_error.png")
+        raise Exception("Lien 'Locations' non visible sur la page.")
 
-            # Ajouter un délai avant de scroller pour simuler un comportement humain
-            logger.info("⏳ Attente avant de scroller vers 'Locations'...")
-            await human_like_delay_search(2, 4)
+    gimii_before_click = await close_gimii_popup(page)
+    if gimii_before_click:
+        logger.info("📜 Défilement supplémentaire après fermeture de Gimii avant clic...")
+        await human_like_scroll_to_element_search(page, LOCATIONS_LINK, scroll_steps=2, jitter=True)
+        await locations_link.wait_for(state="visible", timeout=10000)
 
-            # Étape 3 : Scroller vers le lien "Locations"
-            logger.info("📜 Défilement vers le lien 'Locations'...")
-            await human_like_scroll_to_element_search(page, LOCATIONS_LINK, scroll_steps=random.randint(6, 10), jitter=True)
+    # Étape 4 : Cliquer sur le lien "Locations"
+    await human_like_delay_search(0.5, 1.5)
+    if not await check_and_solve_captcha(page, "clic sur Locations"):
+        raise Exception("Échec CAPTCHA avant clic sur Locations")
+    await human_like_click_search(page, LOCATIONS_LINK, move_cursor=True, click_variance=30)
 
-            # Étape 4 : Vérifier que le lien "Locations" est visible et cliquable
-            locations_link = page.locator(LOCATIONS_LINK)
-            try:
-                await locations_link.wait_for(state="visible", timeout=30000)
-                logger.info("✅ Lien 'Locations' visible après défilement.")
-                await expect(locations_link).to_be_enabled(timeout=5000)
-                logger.info("✅ Lien 'Locations' est cliquable.")
-            except PlaywrightTimeoutError as e:
-                logger.error(f"❌ Lien 'Locations' non trouvé ou non cliquable dans le délai imparti : {e}")
-                await page.screenshot(path=f"locations_link_error_attempt_{attempt}.png")
-                raise Exception("Lien 'Locations' non visible ou non cliquable sur la page.")
+    # Attendre un peu avant de vérifier l'URL
+    await asyncio.sleep(random.uniform(2, 5))
+    current_url = page.url
+    logger.info(f"🌐 URL actuelle après clic : {current_url}")
 
-            # Étape 5 : Vérifier Gimii après le défilement et avant le clic
-            gimii_before_click = await close_gimii_popup(page)
-            if gimii_before_click:
-                logger.info("✅ Popup Gimii détectée et fermée après défilement, avant clic sur 'Locations'.")
-                # S'assurer que le lien est toujours visible après la fermeture de Gimii
-                await human_like_scroll_to_element_search(page, LOCATIONS_LINK, scroll_steps=2, jitter=True)
-                await locations_link.wait_for(state="visible", timeout=10000)
-                await expect(locations_link).to_be_enabled(timeout=5000)
+    # Vérifier si on est sur la bonne page
+    if EXPECTED_LOCATIONS_URL not in current_url:
+        logger.warning(f"⚠️ URL incorrecte après clic ({current_url}), attente de redirection naturelle...")
+        await page.wait_for_load_state("networkidle", timeout=30000)
+        current_url = page.url
+        logger.info(f"🌐 URL après attente : {current_url}")
+        if EXPECTED_LOCATIONS_URL not in current_url:
+            logger.error(f"❌ Échec de la navigation vers {EXPECTED_LOCATIONS_URL}")
+            await page.screenshot(path="navigation_error.png")
+            raise Exception(f"Navigation vers 'Locations' échouée, URL actuelle : {current_url}")
 
-            # Étape 6 : Vérifier les blocages anti-bot avant le clic
-            captcha_iframe = page.locator('iframe[title="DataDome CAPTCHA"]')
-            if await captcha_iframe.is_visible(timeout=3000):
-                logger.warning("⚠️ CAPTCHA détecté avant clic sur 'Locations', tentative de résolution...")
-                if not await solve_audio_captcha(page):
-                    logger.error("❌ Échec de la résolution du CAPTCHA avant clic sur 'Locations'.")
-                    raise Exception("Échec CAPTCHA avant clic sur Locations")
-                logger.info("✅ CAPTCHA résolu, reprise de la navigation...")
+    # Étape 5 : Vérifier Gimii après navigation
+    gimii_reappeared = await close_gimii_popup(page)
+    if gimii_reappeared:
+        logger.warning("⚠️ Popup Gimii réapparue sur la page 'Locations', fermée à nouveau.")
 
-            error_message = page.locator('text="Vous avez été bloqué"')
-            if await error_message.is_visible(timeout=3000):
-                logger.error("❌ Blocage anti-bot détecté par Leboncoin.")
-                await page.screenshot(path=f"anti_bot_error_attempt_{attempt}.png")
-                raise Exception("Blocage anti-bot détecté avant clic sur Locations")
-
-            # Étape 7 : Cliquer sur le lien "Locations" avec une attente explicite
-            # Capturer une capture d'écran et le contenu HTML pour débogage
-            await page.screenshot(path=f"before_locations_click_attempt_{attempt}.png")
-            page_content = await page.content()
-            with open(f"before_locations_click_attempt_{attempt}.html", "w", encoding="utf-8") as f:
-                f.write(page_content)
-            logger.info(f"📸 Capture d'écran et contenu HTML sauvegardés avant clic (attempt {attempt}).")
-
-            await human_like_delay_search(2, 5)
-            await locations_link.hover()
-            logger.info("🖱️ Survol du lien 'Locations' effectué.")
-            await human_like_delay_search(0.5, 1.5)
-
-            # Tentative de clic via human_like_click_search
-            try:
-                async with page.expect_navigation(timeout=60000) as navigation_info:
-                    await human_like_click_search(page, LOCATIONS_LINK, move_cursor=True, click_variance=30)
-                    logger.info("🖱️ Clic sur le lien 'Locations' effectué via human_like_click_search.")
-                await navigation_info.value
-            except Exception as e:
-                logger.warning(f"⚠️ Échec du clic via human_like_click_search : {e}")
-                logger.info("🔄 Tentative de clic via JavaScript...")
-                async with page.expect_navigation(timeout=60000) as navigation_info:
-                    await page.evaluate("""
-                        (selector) => {
-                            const link = document.querySelector(selector);
-                            if (link) {
-                                const event = new Event('click', { bubbles: true, cancelable: true });
-                                link.dispatchEvent(event);
-                                link.click();
-                            } else {
-                                throw new Error("Lien non trouvé pour clic JavaScript");
-                            }
-                        }
-                    """, LOCATIONS_LINK)
-                    logger.info("🖱️ Clic sur le lien 'Locations' effectué via JavaScript.")
-                await navigation_info.value
-
-            # Étape 8 : Attendre la redirection et vérifier la page "Locations"
-            logger.info("⏳ Attente de la redirection vers la page 'Locations'...")
-            await page.wait_for_load_state("domcontentloaded", timeout=60000)
-
-            # Vérifier la présence du bouton "Afficher tous les filtres" ou d'un conteneur de résultats
-            navigation_confirmed = False
-            current_url = page.url
-            if EXPECTED_LOCATIONS_URL in current_url:
-                logger.info("✅ URL correcte détectée.")
-                try:
-                    await page.locator(RESULTS_CONTAINER).first.wait_for(state="visible", timeout=15000)
-                    logger.info("✅ Conteneur de résultats visible, navigation confirmée.")
-                    navigation_confirmed = True
-                except PlaywrightTimeoutError:
-                    logger.warning("⚠️ Conteneur de résultats non trouvé, vérification du bouton 'Afficher tous les filtres'...")
-
-            if not navigation_confirmed:
-                try:
-                    await page.locator(FILTERS_BUTTON).wait_for(state="visible", timeout=15000)
-                    logger.info("✅ Page 'Locations' chargée avec le bouton 'Afficher tous les filtres' visible.")
-                    navigation_confirmed = True
-                except PlaywrightTimeoutError:
-                    logger.warning(f"⚠️ Bouton 'Afficher tous les filtres' non trouvé après clic. URL actuelle : {current_url}")
-                    if EXPECTED_LOCATIONS_URL not in current_url:
-                        logger.info("🔄 Tentative de navigation JavaScript...")
-                        await page.evaluate(f"window.location.href = '{EXPECTED_LOCATIONS_URL}'")
-                        await page.wait_for_load_state("domcontentloaded", timeout=60000)
-                        current_url = page.url
-                        logger.info(f"🌐 URL après navigation JavaScript : {current_url}")
-                        if EXPECTED_LOCATIONS_URL in current_url:
-                            try:
-                                await page.locator(RESULTS_CONTAINER).first.wait_for(state="visible", timeout=15000)
-                                logger.info("✅ Conteneur de résultats visible après navigation JavaScript.")
-                                navigation_confirmed = True
-                            except PlaywrightTimeoutError:
-                                try:
-                                    await page.locator(FILTERS_BUTTON).wait_for(state="visible", timeout=15000)
-                                    logger.info("✅ Page 'Locations' chargée après navigation JavaScript.")
-                                    navigation_confirmed = True
-                                except PlaywrightTimeoutError:
-                                    if await error_message.is_visible(timeout=3000):
-                                        logger.error("❌ Blocage anti-bot détecté après navigation JavaScript.")
-                                        await page.screenshot(path=f"anti_bot_error_after_js_attempt_{attempt}.png")
-                                        raise Exception("Blocage anti-bot détecté après navigation JavaScript")
-                                    page_content = await page.content()
-                                    with open(f"page_content_attempt_{attempt}.html", "w", encoding="utf-8") as f:
-                                        f.write(page_content)
-                                    logger.error(f"❌ Échec de la navigation vers {EXPECTED_LOCATIONS_URL}, contenu de la page sauvegardé dans page_content_attempt_{attempt}.html")
-                                    await page.screenshot(path=f"navigation_error_attempt_{attempt}.png")
-                                    raise Exception(f"Navigation vers 'Locations' échouée, URL actuelle : {current_url}")
-                    else:
-                        logger.info("✅ URL correcte détectée, mais les éléments ne sont pas visibles. On continue...")
-
-            if not navigation_confirmed:
-                raise Exception("Échec de la confirmation de navigation vers la page 'Locations'.")
-
-            # Étape 9 : Vérifier Gimii après navigation
-            gimii_reappeared = await close_gimii_popup(page)
-            if gimii_reappeared:
-                logger.warning("⚠️ Popup Gimii réapparue sur la page 'Locations', fermée à nouveau.")
-
-            logger.info("✅ Navigation vers 'Locations' réussie.")
-            return True
-
-        except Exception as e:
-            logger.error(f"⚠️ Erreur lors de la navigation (Tentative {attempt}/{max_attempts}) : {e}")
-            if attempt == max_attempts:
-                logger.error("❌ Échec après toutes les tentatives.")
-                raise
-            try:
-                await page.reload(timeout=60000)
-                await human_like_delay_search(5, 10)
-                await wait_for_page_load(page)
-            except Exception as reload_error:
-                logger.error(f"❌ Échec du rechargement de la page : {reload_error}")
-                raise
+    logger.info("⏳ Attente du chargement complet de la page 'Locations'...")
+    await page.wait_for_load_state("networkidle", timeout=30000)
+    logger.info("✅ Page 'Locations' chargée et navigation réussie.")
+    return True
 
 async def apply_filters(page, api_responses: list):
     FILTRES_BTN = 'button[title="Afficher tous les filtres"]'
     MAISON_CHECKBOX = 'button[role="checkbox"][value="1"]'
     APPARTEMENT_CHECKBOX = 'button[role="checkbox"][value="2"]'
     PRO_CHECKBOX = 'button[role="checkbox"][value="pro"]'
-    SEARCH_BTN_SELECTOR = 'footer button[aria-label="Rechercher"]'  # Sélecteur mis à jour
-    SEARCH_BTN = page.locator(SEARCH_BTN_SELECTOR)
+    SEARCH_BTN = page.locator('#radix-\\:Rbbj6qcrl6\\: > footer button[aria-label="Rechercher"][data-spark-component="button"]')
     LOGIN_PAGE_INDICATOR = 'input[name="email"]'
 
     await init_db()
@@ -337,32 +221,12 @@ async def apply_filters(page, api_responses: list):
 
     logger.info("🔄 Clic sur 'Rechercher' pour charger la page 1 et préparer la pagination...")
     try:
-        # Attendre que le bouton "Rechercher" soit visible
-        try:
-            await SEARCH_BTN.wait_for(state="visible", timeout=30000)
-            logger.info("✅ Bouton 'Rechercher' visible avec le sélecteur.")
-            await human_like_scroll_to_element(page, SEARCH_BTN_SELECTOR, scroll_steps=2, jitter=True)
-        except PlaywrightTimeoutError:
-            logger.warning("⚠️ Bouton 'Rechercher' non trouvé avec le sélecteur. Tentative avec navigation par Tab...")
-            # Simuler 3 appuis sur Tab pour naviguer vers le bouton
-            for _ in range(3):
-                await page.keyboard.press("Tab")
-                await human_like_delay_search(0.5, 1)
-            # Appuyer sur Enter pour cliquer
-            await page.keyboard.press("Enter")
-            logger.info("✅ Clic sur 'Rechercher' effectué via Tab + Enter.")
-            await human_like_delay_search(2, 5)
-            # Vérifier si la navigation a réussi
-            if not await page.locator('button[title="Afficher tous les filtres"]').is_visible(timeout=10000):
-                raise Exception("Échec de la navigation après Tab + Enter.")
-
-        # Vérifier CAPTCHA avant clic (si le bouton est trouvé)
-        if await SEARCH_BTN.is_visible():
-            if not await check_and_solve_captcha(page, "clic sur Rechercher"):
-                raise Exception("Échec CAPTCHA avant clic sur Rechercher")
-            await human_like_click_search(page, SEARCH_BTN_SELECTOR, move_cursor=True, click_delay=0.7, click_variance=30)
-            await human_like_delay_search(2, 5)
-
+        await SEARCH_BTN.wait_for(state="visible", timeout=20000)
+        await human_like_scroll_to_element(page, '#radix-\\:Rbbj6qcrl6\\: > footer button[aria-label="Rechercher"][data-spark-component="button"]', scroll_steps=2, jitter=True)
+        if not await check_and_solve_captcha(page, "clic sur Rechercher"):
+            raise Exception("Échec CAPTCHA avant clic sur Rechercher")
+        await human_like_click_search(page, '#radix-\\:Rbbj6qcrl6\\: > footer button[aria-label="Rechercher"][data-spark-component="button"]', move_cursor=True, click_delay=0.7, click_variance=30)
+        await human_like_delay_search(2, 5)
     except Exception as e:
         logger.error(f"❌ Erreur lors du clic sur 'Rechercher' : {str(e)}")
         await page.screenshot(path="search_button_error.png")
