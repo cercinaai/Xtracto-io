@@ -1,7 +1,6 @@
 from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Dict
 from datetime import datetime
-from loguru import logger
 from src.database.database import get_source_db, get_destination_db
 from src.utils.b2_utils import upload_image_to_b2
 from urllib.parse import urlparse
@@ -119,8 +118,6 @@ async def transfer_annonce(annonce: Dict) -> bool:
                 return True
         return False
     else:
-        if "_id" not in annonce:
-            pass  # No logging as requested
         await dest_collection.insert_one(annonce)
         return True
 
@@ -138,6 +135,11 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
     dest_db = get_destination_db()
     annonce_id = annonce["idSec"]
     image_urls = annonce.get("images", [])
+
+    # Check if images are valid (not all "N/A")
+    if not image_urls or all(url == "N/A" for url in image_urls):
+        # Skip this annonce as it has no valid images to process
+        return {"idSec": annonce_id, "images": image_urls, "skipped": True}
 
     # Step 1: Process images if not already uploaded to Backblaze
     upload_tasks = [
@@ -158,7 +160,7 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
             failed_uploads += 1
 
     # Use original URLs if all uploads fail
-    if failed_uploads == len(uploaded_urls):
+    if failed_uploads == len(uploaded_urls) and upload_tasks:
         updated_image_urls = image_urls  # Use original URLs if all uploads fail
     else:
         # Replace failed uploads with original URLs

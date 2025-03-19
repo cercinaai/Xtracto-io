@@ -7,12 +7,16 @@ from b2sdk.v2 import InMemoryAccountInfo, B2Api
 from src.config.settings import B2_BUCKET_NAME, B2_ACCESS_KEY, B2_SECRET_KEY
 from loguru import logger
 
+# Suppress DEBUG logs unless there's an error
+logger.remove()  # Remove default handler
+logger.add(lambda msg: print(msg, end=""), level="INFO")  # Only INFO and above
+
 async def get_b2_api() -> B2Api:
     b2_api = B2Api(InMemoryAccountInfo())
     await asyncio.to_thread(b2_api.authorize_account, "production", B2_ACCESS_KEY, B2_SECRET_KEY)
     return b2_api
 
-def crop_watermark_from_image(image_buffer: bytes, max_cut: int = 50) -> bytes:
+def crop_watermark_from_image(image_buffer: bytes, max_cut: int = 50, min_cut_top: int = 20, min_cut_bottom: int = 15) -> bytes:
     if not image_buffer or len(image_buffer) == 0:
         raise ValueError("Buffer d'image vide ou invalide")
     original_image = cv2.imdecode(np.frombuffer(image_buffer, np.uint8), cv2.IMREAD_COLOR)
@@ -33,10 +37,16 @@ def crop_watermark_from_image(image_buffer: bytes, max_cut: int = 50) -> bytes:
         if coords:
             bottom_detection = coords
             break
-    removal = min(top_detection[3] if top_detection else 0, max_cut) or min(bottom_detection[3] if bottom_detection else 0, max_cut)
-    new_top = removal
-    new_bottom = height - removal
-    cropped = original_image[new_top:new_bottom, :] if new_top < new_bottom else original_image
+    # Calculate crop amounts
+    top_removal = min(top_detection[3] if top_detection else 0, max_cut) or min_cut_top
+    bottom_removal = min(bottom_detection[3] if bottom_detection else 0, max_cut) or min_cut_bottom
+    new_top = top_removal
+    new_bottom = height - bottom_removal
+    if new_top >= new_bottom:
+        # If cropping would result in an invalid image, use the original image
+        cropped = original_image
+    else:
+        cropped = original_image[new_top:new_bottom, :]
     _, cropped_buffer = cv2.imencode('.jpg', cropped)
     if cropped_buffer is None or len(cropped_buffer) == 0:
         raise ValueError("Échec de l'encodage JPEG")
@@ -81,7 +91,6 @@ def detect_watermark_in_corner(gray_image: np.ndarray, corner: str, threshold_ra
             return (max(0, x - 10), max(0, y - 10), min(w + 20, width - x), min(h + 20, height - y))
     return None
 
-   
 async def upload_image_to_b2(image_url: str, filename: str, target: str = "real_estate") -> str:
     max_retries = 3
     backoff_factor = 0.5
@@ -89,7 +98,6 @@ async def upload_image_to_b2(image_url: str, filename: str, target: str = "real_
         try:
             if not image_url.startswith('http'):
                 raise ValueError("URL invalide")
-            logger.debug(f"📥 Téléchargement de l'image {image_url}")
             response = await asyncio.to_thread(
                 requests.get,
                 image_url,
@@ -100,15 +108,12 @@ async def upload_image_to_b2(image_url: str, filename: str, target: str = "real_
             if not response.content:
                 logger.warning(f"⚠️ Contenu vide pour l'image {image_url}")
                 return "N/A"
-            logger.debug(f"✂️ Suppression du filigrane pour {image_url}")
             cropped_buffer = crop_watermark_from_image(response.content)
             b2_api = await get_b2_api()
             bucket = await asyncio.to_thread(b2_api.get_bucket_by_name, B2_BUCKET_NAME)
             target_name = f"{target}/{filename}"
-            logger.debug(f"📤 Upload vers Backblaze: {target_name}")
             await asyncio.to_thread(bucket.upload_bytes, cropped_buffer, target_name, content_type='image/jpeg')
             uploaded_url = f"https://f003.backblazeb2.com/file/{B2_BUCKET_NAME}/{target_name}"
-            logger.debug(f"✅ Image uploadée avec succès: {uploaded_url}")
             return uploaded_url
         except Exception as e:
             if attempt < max_retries - 1:

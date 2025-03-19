@@ -4,6 +4,10 @@ from src.database.realState import transfer_from_withagence_to_finale
 from src.database.database import init_db, close_db, get_source_db, get_destination_db
 from loguru import logger
 
+# Configure logger to only show INFO messages in the desired format
+logger.remove()  # Remove default handler
+logger.add(lambda msg: print(msg, end=""), level="INFO", format="annonce a traite : {message}")
+
 async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
     """
     Process images for annonces in realStateWithAgence and transfer them to realStateFinale.
@@ -29,7 +33,7 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
     }
     annonces_with_agence = await source_db["realStateWithAgence"].find(query).to_list(length=None)
     total_annonces = len(annonces_with_agence)
-    logger.info(f"annonce a traite : {total_annonces}")
+    logger.info(total_annonces)
 
     if total_annonces == 0:
         await close_db()
@@ -39,7 +43,7 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
     existing_ids = await dest_db["realStateFinale"].distinct("idSec")
     annonces_to_process = [annonce for annonce in annonces_with_agence if annonce["idSec"] not in existing_ids]
     total_to_process = len(annonces_to_process)
-    logger.info(f"annonce a traite : {total_to_process}")
+    logger.info(total_to_process)
 
     if total_to_process == 0:
         await close_db()
@@ -63,8 +67,8 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
             result = await transfer_from_withagence_to_finale(annonce)
             processed_count += 1
             remaining = total_to_process - processed_count
-            logger.info(f"annonce a traite : {remaining}")
-            return bool(result)
+            logger.info(remaining)
+            return bool(result) and not result.get("skipped", False)
 
     tasks = [process_annonce_wrapper(annonce) for annonce in annonces_to_process]
     results = await asyncio.gather(*tasks, return_exceptions=True)
