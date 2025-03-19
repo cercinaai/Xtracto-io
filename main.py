@@ -32,12 +32,11 @@ if platform.system() == "Windows":
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler = None
     try:
         await init_db()
         logger.success("✅ Connexion aux bases de données établie avec succès")
-        # Lancer le planificateur de tâches cron
-        scheduler = start_cron()
+        # Lancer le processus de traitement des images en continu
+        asyncio.create_task(start_cron())
         logger.info("🚀 Serveur démarré sur http://0.0.0.0:8000")
     except Exception as e:
         logger.critical(f"🚨 Erreur critique au démarrage : {e}")
@@ -46,9 +45,6 @@ async def lifespan(app: FastAPI):
     yield
     
     try:
-        if scheduler:
-            scheduler.shutdown()
-            logger.info("🛑 Planificateur arrêté.")
         await close_db()
         logger.info("🔌 Connexion aux bases de données fermée proprement")
     except Exception as e:

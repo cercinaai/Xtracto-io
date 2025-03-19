@@ -51,45 +51,37 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
     source_db = get_source_db()
     dest_db = get_destination_db()
 
-    # Étape 1 : Supprimer les annonces avec 0 images de realStateWithAgence
-    delete_query = {
-        "idAgence": {"$exists": True},
-        "$or": [
-            {"images": {"$size": 0}},  # Annonces avec un tableau d'images vide
-            {"images": {"$exists": False}},  # Annonces sans champ images
-            {"images": []}  # Annonces avec un tableau d'images explicitement vide
-        ]
-    }
-    deleted = await source_db["realStateWithAgence"].delete_many(delete_query)
-    logger.info(f"🗑️ {deleted.deleted_count} annonces avec 0 images supprimées de realStateWithAgence.")
-
-    # Étape 2 : Récupérer les annonces de realStateWithAgence
+    # Étape 1 : Récupérer les annonces de realStateWithAgence avec des images non traitées
     query = {
         "idAgence": {"$exists": True},
-        "images": {"$exists": True, "$ne": []}  # S'assurer que les annonces ont des images
+        "images": {
+            "$exists": True,
+            "$ne": [],  # S'assurer que les annonces ont des images
+            "$not": {"$elemMatch": {"$regex": "https://f003.backblazeb2.com"}}  # Images non traitées
+        }
     }
     annonces_with_agence = await source_db["realStateWithAgence"].find(query).to_list(length=None)
     total_annonces = len(annonces_with_agence)
-    logger.info(f"📸 {total_annonces} annonces dans realStateWithAgence à vérifier.")
+    logger.info(f"📸 {total_annonces} annonces dans realStateWithAgence avec des images non traitées.")
 
     if total_annonces == 0:
         await close_db()
-        return {"processed": 0, "deleted": deleted.deleted_count}
+        return {"processed": 0}
 
-    # Étape 3 : Récupérer les IDs des annonces déjà présentes dans realStateFinale
+    # Étape 2 : Récupérer les IDs des annonces déjà présentes dans realStateFinale
     existing_ids = await dest_db["realStateFinale"].distinct("idSec")
     logger.info(f"🔍 {len(existing_ids)} annonces déjà présentes dans realStateFinale.")
 
-    # Étape 4 : Filtrer les annonces qui ne sont pas dans realStateFinale
+    # Étape 3 : Filtrer les annonces qui ne sont pas dans realStateFinale
     annonces_to_process = [annonce for annonce in annonces_with_agence if annonce["idSec"] not in existing_ids]
     total_to_process = len(annonces_to_process)
     logger.info(f"📸 {total_to_process} annonces à traiter (non présentes dans realStateFinale).")
 
     if total_to_process == 0:
         await close_db()
-        return {"processed": 0, "deleted": deleted.deleted_count}
+        return {"processed": 0}
 
-    # Étape 5 : Traiter les images des annonces
+    # Étape 4 : Traiter les images des annonces
     processed_count = 0
     semaphore = asyncio.Semaphore(max_concurrent_tasks)
 
@@ -98,7 +90,7 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
             annonce_id = annonce["idSec"]
             raw_images = annonce.get("images", [])
             if not raw_images:
-                logger.info(f"ℹ️ Annonce {annonce_id} sans images, ignorée (devrait être supprimée).")
+                logger.info(f"ℹ️ Annonce {annonce_id} sans images, ignorée.")
                 return False
             result = await process_annonce_images(annonce, annonce_id, raw_images)
             return bool(result)
@@ -109,7 +101,7 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
 
     await close_db()
     logger.info(f"✅ {processed_count} annonces traitées et transférées vers realStateFinale.")
-    return {"processed": processed_count, "deleted": deleted.deleted_count}
+    return {"processed": processed_count}
 
 async def process_annonce_images(annonce: Dict, annonce_id: str, image_urls: List[str]) -> Dict:
     try:
@@ -133,10 +125,13 @@ async def process_annonce_images(annonce: Dict, annonce_id: str, image_urls: Lis
         await transfer_annonce(annonce)
         logger.info(f"✅ Annonce {annonce_id} transférée vers realStateFinale avec {len(updated_image_urls)} images.")
 
-        # Étape 4 : Supprimer l'annonce de realStateWithAgence après transfert
+        # Étape 4 : Mettre à jour l'annonce dans realStateWithAgence avec les nouvelles URLs
         source_db = get_source_db()
-        await source_db["realStateWithAgence"].delete_one({"idSec": annonce_id})
-        logger.info(f"🗑️ Annonce {annonce_id} supprimée de realStateWithAgence après transfert.")
+        await source_db["realStateWithAgence"].update_one(
+            {"idSec": annonce_id},
+            {"$set": {"images": updated_image_urls, "nbrImages": len(updated_image_urls), "scraped_at": datetime.utcnow()}}
+        )
+        logger.info(f"📝 Annonce {annonce_id} mise à jour dans realStateWithAgence avec les nouvelles URLs d'images.")
 
         return {"idSec": annonce_id, "images": updated_image_urls}
 
