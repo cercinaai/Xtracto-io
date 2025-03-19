@@ -77,7 +77,7 @@ async def wait_for_page_load(page):
 async def navigate_to_locations(page, max_attempts=3):
     LOCATIONS_LINK = 'a[href="/c/locations"][title="Locations"]'
     FILTERS_BUTTON = 'button[title="Afficher tous les filtres"]'
-    RESULTS_CONTAINER = '[data-test-id="listing-card"]'  # Un sélecteur pour les cartes de résultats
+    RESULTS_CONTAINER = '[data-test-id="listing-card"]'
     logger.info("🌀 Navigation vers 'Locations'...")
 
     for attempt in range(1, max_attempts + 1):
@@ -103,7 +103,6 @@ async def navigate_to_locations(page, max_attempts=3):
             try:
                 await locations_link.wait_for(state="visible", timeout=30000)
                 logger.info("✅ Lien 'Locations' visible après défilement.")
-                # Vérifier si le lien est cliquable
                 await expect(locations_link).to_be_enabled(timeout=5000)
                 logger.info("✅ Lien 'Locations' est cliquable.")
             except PlaywrightTimeoutError as e:
@@ -134,15 +133,42 @@ async def navigate_to_locations(page, max_attempts=3):
                 raise Exception("Blocage anti-bot détecté avant clic sur Locations")
 
             # Étape 5 : Cliquer sur le lien "Locations" avec une attente explicite
-            await human_like_delay_search(0.5, 1.5)
-            if not await check_and_solve_captcha(page, "clic sur Locations"):
-                raise Exception("Échec CAPTCHA avant clic sur Locations")
+            # Capturer une capture d'écran et le contenu HTML pour débogage
+            await page.screenshot(path=f"before_locations_click_attempt_{attempt}.png")
+            page_content = await page.content()
+            with open(f"before_locations_click_attempt_{attempt}.html", "w", encoding="utf-8") as f:
+                f.write(page_content)
+            logger.info(f"📸 Capture d'écran et contenu HTML sauvegardés avant clic (attempt {attempt}).")
 
-            # Attendre une requête réseau pour confirmer que le clic déclenche une navigation
-            async with page.expect_navigation(timeout=60000) as navigation_info:
-                await human_like_click_search(page, LOCATIONS_LINK, move_cursor=True, click_variance=30)
-                logger.info("🖱️ Clic sur le lien 'Locations' effectué.")
-            await navigation_info.value  # Attendre que la navigation soit terminée
+            await human_like_delay_search(2, 5)
+            await locations_link.hover()
+            logger.info("🖱️ Survol du lien 'Locations' effectué.")
+            await human_like_delay_search(0.5, 1.5)
+
+            # Tentative de clic via human_like_click_search
+            try:
+                async with page.expect_navigation(timeout=60000) as navigation_info:
+                    await human_like_click_search(page, LOCATIONS_LINK, move_cursor=True, click_variance=30)
+                    logger.info("🖱️ Clic sur le lien 'Locations' effectué via human_like_click_search.")
+                await navigation_info.value
+            except Exception as e:
+                logger.warning(f"⚠️ Échec du clic via human_like_click_search : {e}")
+                logger.info("🔄 Tentative de clic via JavaScript...")
+                async with page.expect_navigation(timeout=60000) as navigation_info:
+                    await page.evaluate("""
+                        (selector) => {
+                            const link = document.querySelector(selector);
+                            if (link) {
+                                const event = new Event('click', { bubbles: true, cancelable: true });
+                                link.dispatchEvent(event);
+                                link.click();
+                            } else {
+                                throw new Error("Lien non trouvé pour clic JavaScript");
+                            }
+                        }
+                    """, LOCATIONS_LINK)
+                    logger.info("🖱️ Clic sur le lien 'Locations' effectué via JavaScript.")
+                await navigation_info.value
 
             # Étape 6 : Attendre la redirection et vérifier la page "Locations"
             logger.info("⏳ Attente de la redirection vers la page 'Locations'...")
@@ -153,7 +179,6 @@ async def navigate_to_locations(page, max_attempts=3):
             current_url = page.url
             if EXPECTED_LOCATIONS_URL in current_url:
                 logger.info("✅ URL correcte détectée.")
-                # Vérifier un élément typique de la page "Locations"
                 try:
                     await page.locator(RESULTS_CONTAINER).first.wait_for(state="visible", timeout=15000)
                     logger.info("✅ Conteneur de résultats visible, navigation confirmée.")
@@ -174,7 +199,6 @@ async def navigate_to_locations(page, max_attempts=3):
                         await page.wait_for_load_state("domcontentloaded", timeout=60000)
                         current_url = page.url
                         logger.info(f"🌐 URL après navigation JavaScript : {current_url}")
-                        # Vérifier à nouveau les éléments
                         if EXPECTED_LOCATIONS_URL in current_url:
                             try:
                                 await page.locator(RESULTS_CONTAINER).first.wait_for(state="visible", timeout=15000)
@@ -190,7 +214,6 @@ async def navigate_to_locations(page, max_attempts=3):
                                         logger.error("❌ Blocage anti-bot détecté après navigation JavaScript.")
                                         await page.screenshot(path=f"anti_bot_error_after_js_attempt_{attempt}.png")
                                         raise Exception("Blocage anti-bot détecté après navigation JavaScript")
-                                    # Capturer le contenu de la page pour déboguer
                                     page_content = await page.content()
                                     with open(f"page_content_attempt_{attempt}.html", "w", encoding="utf-8") as f:
                                         f.write(page_content)
@@ -216,7 +239,6 @@ async def navigate_to_locations(page, max_attempts=3):
             if attempt == max_attempts:
                 logger.error("❌ Échec après toutes les tentatives.")
                 raise
-            # Recharger la page et attendre
             try:
                 await page.reload(timeout=60000)
                 await human_like_delay_search(5, 10)
