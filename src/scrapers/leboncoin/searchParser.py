@@ -44,20 +44,49 @@ async def close_cookies_popup(page):
         logger.info("✅ Aucune popup de cookies détectée.")
 
 async def close_gimii_popup(page) -> bool:
-    CLOSE_BUTTON = '#gimii-root > div > div.gimii_root__NNJEc.gimii_modal__wnVRr.gimii-modal-opening-animation > div.gimii_root__NNJEc > div:nth-child(6) > div > button.gimii_root__CDCDX.gimii_secondary__gXJIP.gimii_action__y3k2A'
+    # Sélecteur corrigé pour la popup Gimii
+    GIMII_POPUP = 'div[class*="gimii_root__"]'  # Conteneur de la popup
+    CLOSE_BUTTON = 'button[class*="gimii_root__"][class*="gimii_secondary__"][class*="gimii_action__"]'  # Bouton "Je ne souhaite pas participer"
     logger.info("🔍 Vérification de la popup Gimii...")
+
+    # Attendre que la popup soit visible avec un timeout plus long
+    popup = page.locator(GIMII_POPUP)
     close_button = page.locator(CLOSE_BUTTON)
-    if await close_button.is_visible(timeout=5000):
-        await human_like_scroll_to_element_search(page, CLOSE_BUTTON, scroll_steps=2, jitter=True)
-        await human_like_delay_search(0.5, 1.5)
-        if not await check_and_solve_captcha(page, "fermeture Gimii"):
-            raise Exception("Échec CAPTCHA avant fermeture Gimii")
-        await human_like_click_search(page, CLOSE_BUTTON, move_cursor=True, click_delay=0.7)
-        logger.info("✅ Popup Gimii fermée.")
-        return True
-    else:
-        logger.info("✅ Aucune popup Gimii détectée.")
-        return False
+    
+    # Boucle d'attente dynamique pour détecter la popup
+    max_wait = 10  # Attendre jusqu'à 10 secondes
+    start_time = asyncio.get_event_loop().time()
+    while asyncio.get_event_loop().time() - start_time < max_wait:
+        try:
+            if await popup.is_visible(timeout=1000):
+                logger.info("✅ Popup Gimii détectée.")
+                # S'assurer que le bouton de fermeture est visible
+                await close_button.wait_for(state="visible", timeout=5000)
+                await human_like_scroll_to_element_search(page, CLOSE_BUTTON, scroll_steps=2, jitter=True)
+                await human_like_delay_search(0.5, 1.5)
+                if not await check_and_solve_captcha(page, "fermeture Gimii"):
+                    raise Exception("Échec CAPTCHA avant fermeture Gimii")
+                await human_like_click_search(page, CLOSE_BUTTON, move_cursor=True, click_delay=0.7)
+                logger.info("✅ Popup Gimii fermée.")
+                # Attendre un peu pour s'assurer que la popup est bien fermée
+                await human_like_delay_search(1, 2)
+                # Vérifier que la popup a bien disparu
+                if await popup.is_visible(timeout=2000):
+                    logger.warning("⚠️ Popup Gimii toujours visible après tentative de fermeture.")
+                    return False
+                return True
+        except Exception as e:
+            logger.warning(f"⚠️ Erreur lors de la détection de la popup Gimii : {e}")
+        await asyncio.sleep(0.5)
+
+    # Si la popup n'est pas détectée après le délai, capturer une capture d'écran pour débogage
+    logger.warning("⚠️ Aucune popup Gimii détectée après attente prolongée.")
+    await page.screenshot(path="gimii_detection_error.png")
+    page_content = await page.content()
+    with open("gimii_detection_error.html", "w", encoding="utf-8") as f:
+        f.write(page_content)
+    logger.info("📸 Capture d'écran et contenu HTML sauvegardés pour débogage (gimii_detection_error).")
+    return False
 
 async def wait_for_page_load(page):
     LOCATIONS_LINK = 'a[href="/c/locations"][title="Locations"]'
@@ -288,7 +317,6 @@ async def navigate_to_locations(page, max_attempts=3):
             except Exception as reload_error:
                 logger.error(f"❌ Échec du rechargement de la page : {reload_error}")
                 raise
-
 async def apply_filters(page, api_responses: list):
     FILTRES_BTN = 'button[title="Afficher tous les filtres"]'
     MAISON_CHECKBOX = 'button[role="checkbox"][value="1"]'
