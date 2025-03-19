@@ -98,11 +98,8 @@ jobs:
               --network xtracto-network \
               -p 8002:8002 \
               -v /home/ubuntu/xtracto-io:/app/src/environment \
-              -e ENVIRONMENT=$ENVIRONMENT \
-              -e KAMELEO_HOST=192.168.122.33 \
-              -e KAMELEO_PORT=5001 \
+              --env-file /home/ubuntu/xtracto-io/prod.env \
               ${{ secrets.DOCKERHUB_USERNAME }}/xtracto-io:latest || { echo "Erreur lancement conteneur"; exit 1; }
-            
             # Vérifier le conteneur
             echo "Vérification du conteneur..."
             docker ps -a | grep xtracto-container || { echo "Conteneur non démarré"; exit 1; }
