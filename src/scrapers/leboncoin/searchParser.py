@@ -111,7 +111,8 @@ async def apply_filters(page, api_responses: list):
     MAISON_CHECKBOX = 'button[role="checkbox"][value="1"]'
     APPARTEMENT_CHECKBOX = 'button[role="checkbox"][value="2"]'
     PRO_CHECKBOX = 'button[role="checkbox"][value="pro"]'
-    SEARCH_BTN = page.locator('#radix-\\:Rbbj6qcrl6\\: > footer button[aria-label="Rechercher"][data-spark-component="button"]')
+    SEARCH_BTN_SELECTOR = 'footer button[aria-label="Rechercher"]'  # Sélecteur mis à jour
+    SEARCH_BTN = page.locator(SEARCH_BTN_SELECTOR)
     LOGIN_PAGE_INDICATOR = 'input[name="email"]'
 
     await init_db()
@@ -187,12 +188,32 @@ async def apply_filters(page, api_responses: list):
 
     logger.info("🔄 Clic sur 'Rechercher' pour charger la page 1 et préparer la pagination...")
     try:
-        await SEARCH_BTN.wait_for(state="visible", timeout=20000)
-        await human_like_scroll_to_element(page, '#radix-\\:Rbbj6qcrl6\\: > footer button[aria-label="Rechercher"][data-spark-component="button"]', scroll_steps=2, jitter=True)
-        if not await check_and_solve_captcha(page, "clic sur Rechercher"):
-            raise Exception("Échec CAPTCHA avant clic sur Rechercher")
-        await human_like_click_search(page, '#radix-\\:Rbbj6qcrl6\\: > footer button[aria-label="Rechercher"][data-spark-component="button"]', move_cursor=True, click_delay=0.7, click_variance=30)
-        await human_like_delay_search(2, 5)
+        # Attendre que le bouton "Rechercher" soit visible
+        try:
+            await SEARCH_BTN.wait_for(state="visible", timeout=30000)
+            logger.info("✅ Bouton 'Rechercher' visible avec le sélecteur.")
+            await human_like_scroll_to_element(page, SEARCH_BTN_SELECTOR, scroll_steps=2, jitter=True)
+        except PlaywrightTimeoutError:
+            logger.warning("⚠️ Bouton 'Rechercher' non trouvé avec le sélecteur. Tentative avec navigation par Tab...")
+            # Simuler 3 appuis sur Tab pour naviguer vers le bouton
+            for _ in range(3):
+                await page.keyboard.press("Tab")
+                await human_like_delay_search(0.5, 1)
+            # Appuyer sur Enter pour cliquer
+            await page.keyboard.press("Enter")
+            logger.info("✅ Clic sur 'Rechercher' effectué via Tab + Enter.")
+            await human_like_delay_search(2, 5)
+            # Vérifier si la navigation a réussi
+            if not await page.locator('button[title="Afficher tous les filtres"]').is_visible(timeout=10000):
+                raise Exception("Échec de la navigation après Tab + Enter.")
+
+        # Vérifier CAPTCHA avant clic (si le bouton est trouvé)
+        if await SEARCH_BTN.is_visible():
+            if not await check_and_solve_captcha(page, "clic sur Rechercher"):
+                raise Exception("Échec CAPTCHA avant clic sur Rechercher")
+            await human_like_click_search(page, SEARCH_BTN_SELECTOR, move_cursor=True, click_delay=0.7, click_variance=30)
+            await human_like_delay_search(2, 5)
+
     except Exception as e:
         logger.error(f"❌ Erreur lors du clic sur 'Rechercher' : {str(e)}")
         await page.screenshot(path="search_button_error.png")
@@ -204,7 +225,6 @@ async def apply_filters(page, api_responses: list):
     else:
         logger.info(f"✅ Réponse API finale capturée : {len(final_response['ads'])} annonces.")
 
-    # Ne pas fermer les ressources ici, laisser scrape_listings_via_api gérer la pagination
     logger.info("✅ Filtres appliqués, prêt pour la pagination.")
     return final_response or initial_response, lambda response: asyncio.create_task(on_api_response(response))
 
