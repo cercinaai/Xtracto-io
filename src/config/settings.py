@@ -9,10 +9,10 @@ load_dotenv(ENV_PATH)
 logger.info(f"📋 Chargement des variables d'environnement depuis {ENV_PATH}")
 
 MONGO_URI = os.getenv("MONGO_URI")
-B2_BUCKET_NAME = os.getenv("AWS_S3_BUCKET_NAME")
+B2_BUCKET_NAME = os.getenv("AWS_S3_BUCKET_NAME")  
+B2_ACCESS_KEY = os.getenv("AWS_S3_ACCESS_KEY")    
+B2_SECRET_KEY = os.getenv("AWS_S3_SECRET_KEY")    
 B2_ENDPOINT = os.getenv("AWS_S3_ENDPOINT")
-B2_ACCESS_KEY = os.getenv("AWS_S3_ACCESS_KEY")
-B2_SECRET_KEY = os.getenv("AWS_S3_SECRET_KEY")
 
 required_vars = {
     "MONGO_URI": MONGO_URI,

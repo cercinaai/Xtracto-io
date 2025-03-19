@@ -4,70 +4,13 @@ import cv2
 import numpy as np
 from typing import Optional
 from b2sdk.v2 import InMemoryAccountInfo, B2Api
-from b2sdk.v2.exception import B2Error
 from src.config.settings import B2_BUCKET_NAME, B2_ACCESS_KEY, B2_SECRET_KEY
 from loguru import logger
 
-# Variable globale pour stocker l'instance de B2Api
-_b2_api = None
-
 async def get_b2_api() -> B2Api:
-    global _b2_api
-    if _b2_api is None:
-        try:
-            logger.info("🔑 Initialisation de l'API Backblaze B2...")
-            _b2_api = B2Api(InMemoryAccountInfo())
-            await asyncio.to_thread(_b2_api.authorize_account, "production", B2_ACCESS_KEY, B2_SECRET_KEY)
-            logger.info("✅ Authentification Backblaze B2 réussie.")
-        except B2Error as e:
-            logger.error(f"❌ Échec de l'authentification Backblaze B2 : {str(e)}")
-            raise
-    return _b2_api
-
-async def upload_image_to_b2(image_url: str, filename: str, target: str = "real_estate") -> str:
-    max_retries = 3
-    backoff_factor = 0.5
-    for attempt in range(max_retries):
-        try:
-            if not image_url.startswith('http'):
-                raise ValueError("URL invalide")
-            logger.debug(f"📥 Téléchargement de l'image : {image_url}")
-            response = await asyncio.to_thread(
-                requests.get,
-                image_url,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-                timeout=10
-            )
-            response.raise_for_status()
-            if not response.content:
-                logger.warning(f"⚠️ Contenu vide pour l'image {image_url}")
-                return "N/A"
-            logger.debug(f"✂️ Suppression du watermark pour l'image {image_url}")
-            cropped_buffer = crop_watermark_from_image(response.content)
-            b2_api = await get_b2_api()
-            bucket = await asyncio.to_thread(b2_api.get_bucket_by_name, B2_BUCKET_NAME)
-            target_name = f"{target}/{filename}"
-            logger.debug(f"📤 Upload de l'image vers Backblaze : {target_name}")
-            await asyncio.to_thread(bucket.upload_bytes, cropped_buffer, target_name, content_type='image/jpeg')
-            file_url = f"https://f003.backblazeb2.com/file/{B2_BUCKET_NAME}/{target_name}"
-            logger.info(f"✅ Image uploadée avec succès : {file_url}")
-            return file_url
-        except B2Error as e:
-            if "bad_auth_token" in str(e).lower() and attempt < max_retries - 1:
-                logger.warning("⚠️ Token d'authentification invalide, tentative de ré-authentification...")
-                global _b2_api
-                _b2_api = None  # Réinitialiser pour forcer une nouvelle authentification
-                await asyncio.sleep(backoff_factor * (2 ** attempt))
-                continue
-            logger.error(f"❌ Échec upload {image_url} après {max_retries} tentatives : {str(e)}")
-            return "N/A"
-        except Exception as e:
-            if attempt < max_retries - 1:
-                logger.warning(f"⚠️ Échec upload {image_url}, tentative {attempt + 1}/{max_retries} : {str(e)}")
-                await asyncio.sleep(backoff_factor * (2 ** attempt))
-                continue
-            logger.error(f"❌ Échec upload {image_url} après {max_retries} tentatives : {str(e)}")
-            return "N/A"
+    b2_api = B2Api(InMemoryAccountInfo())
+    await asyncio.to_thread(b2_api.authorize_account, "production", B2_ACCESS_KEY, B2_SECRET_KEY)
+    return b2_api
 
 def crop_watermark_from_image(image_buffer: bytes, max_cut: int = 50) -> bytes:
     if not image_buffer or len(image_buffer) == 0:
@@ -137,3 +80,32 @@ def detect_watermark_in_corner(gray_image: np.ndarray, corner: str, threshold_ra
         elif corner == 'bottom_right' and x > width - margin - w and y > height - margin - h:
             return (max(0, x - 10), max(0, y - 10), min(w + 20, width - x), min(h + 20, height - y))
     return None
+
+async def upload_image_to_b2(image_url: str, filename: str, target: str = "real_estate") -> str:
+    max_retries = 3
+    backoff_factor = 0.5
+    for attempt in range(max_retries):
+        try:
+            if not image_url.startswith('http'):
+                raise ValueError("URL invalide")
+            response = await asyncio.to_thread(
+                requests.get,
+                image_url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                timeout=10
+            )
+            response.raise_for_status()
+            if not response.content:
+                return "N/A"
+            cropped_buffer = crop_watermark_from_image(response.content)
+            b2_api = await get_b2_api()
+            bucket = await asyncio.to_thread(b2_api.get_bucket_by_name, B2_BUCKET_NAME)
+            target_name = f"{target}/{filename}"
+            await asyncio.to_thread(bucket.upload_bytes, cropped_buffer, target_name, content_type='image/jpeg')
+            return f"https://f003.backblazeb2.com/file/{B2_BUCKET_NAME}/{target_name}"
+        except Exception as e:
+            if attempt < max_retries - 1:
+                await asyncio.sleep(backoff_factor * (2 ** attempt))
+                continue
+            logger.warning(f"⚠️ Échec upload {image_url} : {e}")
+            return "N/A"

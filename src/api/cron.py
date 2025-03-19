@@ -12,33 +12,31 @@ if not os.path.exists("logs/capture/leboncoin"):
     os.makedirs("logs/capture/leboncoin")
 
 logger.remove()  # Supprime la configuration par défaut
-logger.add(sys.stdout, level="DEBUG")  # Affiche tout dans la console
+logger.add(sys.stdout, level="INFO")  # Affiche uniquement les logs INFO dans la console
 logger.add(
     "logs/leboncoin/cron_{time:YYYY-MM-DD}.log",
     rotation="1 day",
     retention="7 days",
-    level="DEBUG",
+    level="INFO",
     format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
 )
 
 async def process_images_job():
     """Tâche pour traiter les images des annonces de la collection realStateWithAgence."""
     try:
-        logger.info("📸 Vérification des annonces dans realStateWithAgence...")
         await init_db()  # Initialiser la connexion à la base de données
         result = await process_and_transfer_images(max_concurrent_tasks=20)
         if result["processed"] > 0:
-            logger.info(f"✅ Traitement terminé : {result['processed']} annonces traitées et transférées.")
+            logger.info(f"{result['processed']} annonces traitees")
         else:
-            logger.info("ℹ️ Aucune nouvelle annonce à traiter.")
+            logger.info("0 annonce a traite")
     except Exception as e:
-        logger.error(f"⚠️ Erreur lors du traitement des images : {e}")
+        logger.error(f"Erreur lors du traitement des images : {e}")
     finally:
         await close_db()  # Fermer la connexion à la base de données
 
 async def start_cron():
     """Démarre une boucle continue pour vérifier et traiter les nouvelles annonces."""
-    logger.info("⏰ Processus de traitement des images démarré en mode continu.")
     while True:
         await process_images_job()
         # Attendre 30 secondes avant la prochaine vérification
