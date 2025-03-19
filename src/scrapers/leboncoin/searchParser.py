@@ -76,6 +76,8 @@ async def wait_for_page_load(page):
 
 async def navigate_to_locations(page, max_attempts=3):
     LOCATIONS_LINK = 'a[href="/c/locations"][title="Locations"]'
+    FILTERS_BUTTON = 'button[title="Afficher tous les filtres"]'
+    RESULTS_CONTAINER = '[data-test-id="listing-card"]'  # Un sélecteur pour les cartes de résultats
     logger.info("🌀 Navigation vers 'Locations'...")
 
     for attempt in range(1, max_attempts + 1):
@@ -121,7 +123,6 @@ async def navigate_to_locations(page, max_attempts=3):
                     raise Exception("Échec CAPTCHA avant clic sur Locations")
                 logger.info("✅ CAPTCHA résolu, reprise de la navigation...")
 
-            # Vérifier si une erreur de blocage est affichée
             error_message = page.locator('text="Vous avez été bloqué"')
             if await error_message.is_visible(timeout=3000):
                 logger.error("❌ Blocage anti-bot détecté par Leboncoin.")
@@ -134,51 +135,69 @@ async def navigate_to_locations(page, max_attempts=3):
                 raise Exception("Échec CAPTCHA avant clic sur Locations")
             await human_like_click_search(page, LOCATIONS_LINK, move_cursor=True, click_variance=30)
 
-            # Attendre un peu avant de vérifier l'URL
+            # Étape 6 : Attendre la redirection et vérifier la page "Locations"
+            logger.info("⏳ Attente de la redirection vers la page 'Locations'...")
             await page.wait_for_load_state("domcontentloaded", timeout=30000)
+
+            # Vérifier la présence du bouton "Afficher tous les filtres" ou d'un conteneur de résultats
+            navigation_confirmed = False
             current_url = page.url
-            logger.info(f"🌐 URL actuelle après clic : {current_url}")
+            if EXPECTED_LOCATIONS_URL in current_url:
+                logger.info("✅ URL correcte détectée.")
+                # Vérifier un élément typique de la page "Locations"
+                try:
+                    await page.locator(RESULTS_CONTAINER).first.wait_for(state="visible", timeout=15000)
+                    logger.info("✅ Conteneur de résultats visible, navigation confirmée.")
+                    navigation_confirmed = True
+                except PlaywrightTimeoutError:
+                    logger.warning("⚠️ Conteneur de résultats non trouvé, vérification du bouton 'Afficher tous les filtres'...")
 
-            # Vérifier si on est sur la bonne page
-            if EXPECTED_LOCATIONS_URL not in current_url:
-                logger.warning(f"⚠️ URL incorrecte après clic ({current_url}), tentative de navigation JavaScript...")
-                # Forcer la navigation via JavaScript
-                await page.evaluate(f"window.location.href = '{EXPECTED_LOCATIONS_URL}'")
-                await page.wait_for_load_state("domcontentloaded", timeout=30000)
-                current_url = page.url
-                logger.info(f"🌐 URL après navigation JavaScript : {current_url}")
-                if EXPECTED_LOCATIONS_URL not in current_url:
-                    # Vérifier à nouveau les blocages anti-bot
-                    if await error_message.is_visible(timeout=3000):
-                        logger.error("❌ Blocage anti-bot détecté après navigation JavaScript.")
-                        await page.screenshot(path=f"anti_bot_error_after_js_attempt_{attempt}.png")
-                        raise Exception("Blocage anti-bot détecté après navigation JavaScript")
-                    # Capturer le contenu de la page pour déboguer
-                    page_content = await page.content()
-                    with open(f"page_content_attempt_{attempt}.html", "w", encoding="utf-8") as f:
-                        f.write(page_content)
-                    logger.error(f"❌ Échec de la navigation vers {EXPECTED_LOCATIONS_URL}, contenu de la page sauvegardé dans page_content_attempt_{attempt}.html")
-                    await page.screenshot(path=f"navigation_error_attempt_{attempt}.png")
-                    raise Exception(f"Navigation vers 'Locations' échouée, URL actuelle : {current_url}")
+            if not navigation_confirmed:
+                try:
+                    await page.locator(FILTERS_BUTTON).wait_for(state="visible", timeout=15000)
+                    logger.info("✅ Page 'Locations' chargée avec le bouton 'Afficher tous les filtres' visible.")
+                    navigation_confirmed = True
+                except PlaywrightTimeoutError:
+                    logger.warning(f"⚠️ Bouton 'Afficher tous les filtres' non trouvé après clic. URL actuelle : {current_url}")
+                    if EXPECTED_LOCATIONS_URL not in current_url:
+                        logger.info("🔄 Tentative de navigation JavaScript...")
+                        await page.evaluate(f"window.location.href = '{EXPECTED_LOCATIONS_URL}'")
+                        await page.wait_for_load_state("domcontentloaded", timeout=30000)
+                        current_url = page.url
+                        logger.info(f"🌐 URL après navigation JavaScript : {current_url}")
+                        # Vérifier à nouveau les éléments
+                        if EXPECTED_LOCATIONS_URL in current_url:
+                            try:
+                                await page.locator(RESULTS_CONTAINER).first.wait_for(state="visible", timeout=15000)
+                                logger.info("✅ Conteneur de résultats visible après navigation JavaScript.")
+                                navigation_confirmed = True
+                            except PlaywrightTimeoutError:
+                                try:
+                                    await page.locator(FILTERS_BUTTON).wait_for(state="visible", timeout=15000)
+                                    logger.info("✅ Page 'Locations' chargée après navigation JavaScript.")
+                                    navigation_confirmed = True
+                                except PlaywrightTimeoutError:
+                                    if await error_message.is_visible(timeout=3000):
+                                        logger.error("❌ Blocage anti-bot détecté après navigation JavaScript.")
+                                        await page.screenshot(path=f"anti_bot_error_after_js_attempt_{attempt}.png")
+                                        raise Exception("Blocage anti-bot détecté après navigation JavaScript")
+                                    # Capturer le contenu de la page pour déboguer
+                                    page_content = await page.content()
+                                    with open(f"page_content_attempt_{attempt}.html", "w", encoding="utf-8") as f:
+                                        f.write(page_content)
+                                    logger.error(f"❌ Échec de la navigation vers {EXPECTED_LOCATIONS_URL}, contenu de la page sauvegardé dans page_content_attempt_{attempt}.html")
+                                    await page.screenshot(path=f"navigation_error_attempt_{attempt}.png")
+                                    raise Exception(f"Navigation vers 'Locations' échouée, URL actuelle : {current_url}")
+                    else:
+                        logger.info("✅ URL correcte détectée, mais les éléments ne sont pas visibles. On continue...")
 
-            # Étape 6 : Vérifier Gimii après navigation
+            if not navigation_confirmed:
+                raise Exception("Échec de la confirmation de navigation vers la page 'Locations'.")
+
+            # Étape 7 : Vérifier Gimii après navigation
             gimii_reappeared = await close_gimii_popup(page)
             if gimii_reappeared:
                 logger.warning("⚠️ Popup Gimii réapparue sur la page 'Locations', fermée à nouveau.")
-
-            # Étape 7 : Attente du chargement avec une condition moins stricte
-            logger.info("⏳ Attente du chargement complet de la page 'Locations'...")
-            await page.wait_for_load_state("domcontentloaded", timeout=30000)
-
-            # Vérification supplémentaire : attendre un élément spécifique de la page "Locations"
-            FILTERS_BUTTON = 'button[title="Afficher tous les filtres"]'
-            try:
-                await page.locator(FILTERS_BUTTON).wait_for(state="visible", timeout=10000)
-                logger.info("✅ Page 'Locations' chargée avec le bouton 'Afficher tous les filtres' visible.")
-            except PlaywrightTimeoutError:
-                logger.error("❌ Bouton 'Afficher tous les filtres' non trouvé après chargement.")
-                await page.screenshot(path=f"locations_page_error_attempt_{attempt}.png")
-                raise Exception("Échec de la vérification du chargement de la page 'Locations'.")
 
             logger.info("✅ Navigation vers 'Locations' réussie.")
             return True
@@ -188,6 +207,7 @@ async def navigate_to_locations(page, max_attempts=3):
             if attempt == max_attempts:
                 logger.error("❌ Échec après toutes les tentatives.")
                 raise
+            await page.reload()
             await human_like_delay_search(5, 10)
             await wait_for_page_load(page)
 
