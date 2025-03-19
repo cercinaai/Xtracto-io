@@ -162,8 +162,8 @@ async def scrape_listings_via_api_loop(page: Page, api_responses: list, response
         for ad in initial_response["ads"]:
             if await process_ad(ad):
                 consecutive_existing += 1
-                if consecutive_existing >= 2:
-                    logger.info(f"🏁 Deux annonces consécutives existantes trouvées. Arrêt du cycle.")
+                if consecutive_existing >= 10:
+                    logger.info(f"🏁 Dix annonces consécutives existantes trouvées. Arrêt du cycle.")
                     return True
             else:
                 consecutive_existing = 0
