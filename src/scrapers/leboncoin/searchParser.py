@@ -89,16 +89,22 @@ async def navigate_to_locations(page, max_attempts=3):
             logger.info("⏳ Attente après fermeture des cookies...")
             await human_like_delay_search(1, 2)
 
-            # Étape 2 : Vérifier Gimii ; si non trouvé, scroller vers "Locations"
+            # Étape 2 : Vérifier Gimii une seule fois avant de scroller
             gimii_closed = await close_gimii_popup(page)
-            if not gimii_closed:
-                logger.info("📜 Défilement vers le lien 'Locations' car aucune popup Gimii détectée...")
-                await human_like_scroll_to_element_search(page, LOCATIONS_LINK, scroll_steps=random.randint(6, 10), jitter=True)
+            if gimii_closed:
+                logger.info("✅ Popup Gimii détectée et fermée avant défilement.")
             else:
-                logger.info("📜 Défilement supplémentaire après fermeture de Gimii pour atteindre 'Locations'...")
-                await human_like_scroll_to_element_search(page, LOCATIONS_LINK, scroll_steps=2, jitter=True)
+                logger.info("✅ Aucune popup Gimii détectée avant défilement.")
 
-            # Étape 3 : Vérifier à nouveau Gimii avant de cliquer
+            # Ajouter un délai avant de scroller pour simuler un comportement humain
+            logger.info("⏳ Attente avant de scroller vers 'Locations'...")
+            await human_like_delay_search(2, 4)
+
+            # Étape 3 : Scroller vers le lien "Locations"
+            logger.info("📜 Défilement vers le lien 'Locations'...")
+            await human_like_scroll_to_element_search(page, LOCATIONS_LINK, scroll_steps=random.randint(6, 10), jitter=True)
+
+            # Étape 4 : Vérifier que le lien "Locations" est visible et cliquable
             locations_link = page.locator(LOCATIONS_LINK)
             try:
                 await locations_link.wait_for(state="visible", timeout=30000)
@@ -110,14 +116,16 @@ async def navigate_to_locations(page, max_attempts=3):
                 await page.screenshot(path=f"locations_link_error_attempt_{attempt}.png")
                 raise Exception("Lien 'Locations' non visible ou non cliquable sur la page.")
 
+            # Étape 5 : Vérifier Gimii après le défilement et avant le clic
             gimii_before_click = await close_gimii_popup(page)
             if gimii_before_click:
-                logger.info("📜 Défilement supplémentaire après fermeture de Gimii avant clic...")
+                logger.info("✅ Popup Gimii détectée et fermée après défilement, avant clic sur 'Locations'.")
+                # S'assurer que le lien est toujours visible après la fermeture de Gimii
                 await human_like_scroll_to_element_search(page, LOCATIONS_LINK, scroll_steps=2, jitter=True)
                 await locations_link.wait_for(state="visible", timeout=10000)
                 await expect(locations_link).to_be_enabled(timeout=5000)
 
-            # Étape 4 : Vérifier les blocages anti-bot avant le clic
+            # Étape 6 : Vérifier les blocages anti-bot avant le clic
             captcha_iframe = page.locator('iframe[title="DataDome CAPTCHA"]')
             if await captcha_iframe.is_visible(timeout=3000):
                 logger.warning("⚠️ CAPTCHA détecté avant clic sur 'Locations', tentative de résolution...")
@@ -132,7 +140,7 @@ async def navigate_to_locations(page, max_attempts=3):
                 await page.screenshot(path=f"anti_bot_error_attempt_{attempt}.png")
                 raise Exception("Blocage anti-bot détecté avant clic sur Locations")
 
-            # Étape 5 : Cliquer sur le lien "Locations" avec une attente explicite
+            # Étape 7 : Cliquer sur le lien "Locations" avec une attente explicite
             # Capturer une capture d'écran et le contenu HTML pour débogage
             await page.screenshot(path=f"before_locations_click_attempt_{attempt}.png")
             page_content = await page.content()
@@ -170,7 +178,7 @@ async def navigate_to_locations(page, max_attempts=3):
                     logger.info("🖱️ Clic sur le lien 'Locations' effectué via JavaScript.")
                 await navigation_info.value
 
-            # Étape 6 : Attendre la redirection et vérifier la page "Locations"
+            # Étape 8 : Attendre la redirection et vérifier la page "Locations"
             logger.info("⏳ Attente de la redirection vers la page 'Locations'...")
             await page.wait_for_load_state("domcontentloaded", timeout=60000)
 
@@ -226,7 +234,7 @@ async def navigate_to_locations(page, max_attempts=3):
             if not navigation_confirmed:
                 raise Exception("Échec de la confirmation de navigation vers la page 'Locations'.")
 
-            # Étape 7 : Vérifier Gimii après navigation
+            # Étape 9 : Vérifier Gimii après navigation
             gimii_reappeared = await close_gimii_popup(page)
             if gimii_reappeared:
                 logger.warning("⚠️ Popup Gimii réapparue sur la page 'Locations', fermée à nouveau.")
