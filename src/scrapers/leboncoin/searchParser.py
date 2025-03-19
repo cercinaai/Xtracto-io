@@ -98,11 +98,19 @@ async def navigate_to_locations(page, max_attempts=3):
 
             # Ajouter un délai avant de scroller pour simuler un comportement humain
             logger.info("⏳ Attente prolongée avant de scroller vers 'Locations'...")
-            await human_like_delay_search(4, 6)  # Délai de 4 à 6 secondes
+            await human_like_delay_search(4, 6)
 
-            # Étape 3 : Scroller vers le lien "Locations"
-            logger.info("📜 Défilement vers le lien 'Locations'...")
-            await human_like_scroll_to_element_search(page, LOCATIONS_LINK, scroll_steps=random.randint(6, 10), jitter=True)
+            # Étape 3 : Scroller vers le lien "Locations" avec vérification de Gimii pendant le défilement
+            logger.info("📜 Défilement vers le lien 'Locations' avec vérification de Gimii...")
+            scroll_steps = random.randint(6, 10)
+            for step in range(scroll_steps):
+                # Vérifier Gimii à chaque étape du défilement
+                gimii_during_scroll = await close_gimii_popup(page)
+                if gimii_during_scroll:
+                    logger.info(f"✅ Popup Gimii détectée et fermée pendant le défilement (étape {step + 1}/{scroll_steps}).")
+                    await human_like_delay_search(1, 2)
+                # Continuer le défilement
+                await human_like_scroll_to_element_search(page, LOCATIONS_LINK, scroll_steps=1, jitter=True)
 
             # Étape 4 : Vérifier que le lien "Locations" est visible et cliquable
             locations_link = page.locator(LOCATIONS_LINK)
@@ -159,9 +167,25 @@ async def navigate_to_locations(page, max_attempts=3):
             logger.info(f"📸 Capture d'écran et contenu HTML sauvegardés avant clic (attempt {attempt}).")
 
             await human_like_delay_search(2, 5)
+            # Vérifier une dernière fois Gimii avant le survol et le clic
+            gimii_before_hover = await close_gimii_popup(page)
+            if gimii_before_hover:
+                logger.info("✅ Popup Gimii détectée et fermée juste avant le survol.")
+                await human_like_delay_search(1, 2)
+                await locations_link.wait_for(state="visible", timeout=10000)
+                await expect(locations_link).to_be_enabled(timeout=5000)
+
             await locations_link.hover()
             logger.info("🖱️ Survol du lien 'Locations' effectué.")
             await human_like_delay_search(0.5, 1.5)
+
+            # Vérifier une dernière fois Gimii après le survol et avant le clic
+            gimii_after_hover = await close_gimii_popup(page)
+            if gimii_after_hover:
+                logger.info("✅ Popup Gimii détectée et fermée juste avant le clic.")
+                await human_like_delay_search(1, 2)
+                await locations_link.wait_for(state="visible", timeout=10000)
+                await expect(locations_link).to_be_enabled(timeout=5000)
 
             # Tentative de clic avec plusieurs méthodes
             try:
