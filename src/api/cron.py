@@ -37,28 +37,27 @@ async def process_images_job():
         logger.info("📸 Début du traitement des images des annonces (realStateWithAgence -> realStateFinale)...")
         await init_db()  # Initialiser la connexion à la base de données
         result = await process_and_transfer_images(max_concurrent_tasks=20)
-        logger.info(f"✅ Traitement terminé : {result['processed']} annonces traitées et transférées.")
+        logger.info(f"✅ Traitement terminé : {result['processed']} annonces traitées et transférées, {result['deleted']} annonces supprimées.")
     except Exception as e:
         logger.error(f"⚠️ Erreur lors du traitement des images : {e}")
     finally:
         await close_db()  # Fermer la connexion à la base de données
         running_task = False
 
-async def start_cron():
+def start_cron():
     """Démarre le planificateur pour exécuter la tâche de traitement des images périodiquement."""
     scheduler = AsyncIOScheduler()
     # Planifier la tâche toutes les 10 minutes
     scheduler.add_job(process_images_job, "interval", minutes=10)
     scheduler.start()
     logger.info("⏰ Planificateur démarré : traitement des images toutes les 10 minutes.")
-
-    # Garder le script en vie
-    try:
-        await asyncio.Event().wait()
-    except (KeyboardInterrupt, SystemExit):
-        scheduler.shutdown()
-        logger.info("🛑 Planificateur arrêté.")
+    return scheduler
 
 if __name__ == "__main__":
     # Lancer le planificateur
-    asyncio.run(start_cron())
+    scheduler = start_cron()
+    try:
+        asyncio.get_event_loop().run_forever()
+    except (KeyboardInterrupt, SystemExit):
+        scheduler.shutdown()
+        logger.info("🛑 Planificateur arrêté.")
