@@ -58,7 +58,7 @@ async def setup_browser():
 
     client.start_profile_with_options(
         profile.id,
-        WebDriverSettings(arguments=[ "--disable-gpu", "--no-sandbox", "--disable-images", "--disable-media-session-api"])
+        WebDriverSettings(arguments=["headless", "--disable-gpu", "--no-sandbox", "--disable-images", "--disable-media-session-api"])
     )
 
     playwright = await async_playwright().start()
