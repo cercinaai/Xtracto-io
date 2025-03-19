@@ -51,6 +51,11 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
     source_db = get_source_db()
     dest_db = get_destination_db()
 
+    # Vérifier si la collection realStateFinale existe
+    collections = await dest_db.list_collection_names()
+    if "realStateFinale" not in collections:
+        logger.warning("⚠️ La collection realStateFinale n'existe pas, elle sera créée automatiquement lors de la première insertion.")
+
     # Étape 1 : Récupérer les annonces de realStateWithAgence avec des images non traitées
     query = {
         "idAgence": {"$exists": True},
@@ -99,6 +104,10 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
     results = await asyncio.gather(*tasks, return_exceptions=True)
     processed_count = sum(1 for res in results if res is True)
 
+    # Vérifier le nombre d'annonces dans realStateFinale après traitement
+    final_count = await dest_db["realStateFinale"].count_documents({})
+    logger.info(f"📊 Après traitement, realStateFinale contient {final_count} annonces.")
+
     await close_db()
     logger.info(f"✅ {processed_count} annonces traitées et transférées vers realStateFinale.")
     return {"processed": processed_count}
@@ -114,7 +123,19 @@ async def process_annonce_images(annonce: Dict, annonce_id: str, image_urls: Lis
             for image_url in image_urls if image_url.startswith('http')
         ]
         uploaded_urls = await asyncio.gather(*upload_tasks, return_exceptions=True)
-        updated_image_urls = [url if isinstance(url, str) else "N/A" for url in uploaded_urls]
+        updated_image_urls = []
+        failed_uploads = 0
+        for url in uploaded_urls:
+            if isinstance(url, str) and url != "N/A":
+                updated_image_urls.append(url)
+            else:
+                updated_image_urls.append("N/A")
+                failed_uploads += 1
+
+        # Vérifier si toutes les images ont échoué
+        if failed_uploads == len(uploaded_urls):
+            logger.error(f"⚠️ Toutes les images de l'annonce {annonce_id} ont échoué à l'upload, abandon du transfert.")
+            return None
 
         # Étape 2 : Mettre à jour les images dans l'annonce
         annonce["images"] = updated_image_urls
@@ -122,7 +143,10 @@ async def process_annonce_images(annonce: Dict, annonce_id: str, image_urls: Lis
         annonce["scraped_at"] = datetime.utcnow()
 
         # Étape 3 : Transférer l'annonce vers realStateFinale
-        await transfer_annonce(annonce)
+        success = await transfer_annonce(annonce)
+        if not success:
+            logger.error(f"⚠️ Échec du transfert de l'annonce {annonce_id} vers realStateFinale.")
+            return None
         logger.info(f"✅ Annonce {annonce_id} transférée vers realStateFinale avec {len(updated_image_urls)} images.")
 
         # Étape 4 : Mettre à jour l'annonce dans realStateWithAgence avec les nouvelles URLs
