@@ -9,9 +9,22 @@ from loguru import logger
 from datetime import datetime
 
 async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
+    """
+    Process images for annonces in realStateWithAgence and transfer them to realStateFinale.
+    
+    Args:
+        max_concurrent_tasks (int): Maximum number of concurrent tasks for processing annonces.
+    
+    Returns:
+        Dict: A dictionary containing the number of processed annonces.
+    """
     await init_db()
     source_db = get_source_db()
     dest_db = get_destination_db()
+
+    # Debug: Check the state of realStateFinale before processing
+    finale_count = await dest_db["realStateFinale"].count_documents({})
+    logger.info(f"📊 realStateFinale contient {finale_count} documents avant traitement")
 
     # Fetch annonces from realStateWithAgence that need processing
     query = {
@@ -32,6 +45,7 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
 
     # Filter out annonces already in realStateFinale
     existing_ids = await dest_db["realStateFinale"].distinct("idSec")
+    logger.info(f"📋 Found {len(existing_ids)} existing idSec in realStateFinale: {existing_ids[:5]}")
     annonces_to_process = [annonce for annonce in annonces_with_agence if annonce["idSec"] not in existing_ids]
     total_to_process = len(annonces_to_process)
     logger.info(f"{total_to_process} annonce a traite")
@@ -44,20 +58,46 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
     semaphore = asyncio.Semaphore(max_concurrent_tasks)
 
     async def process_annonce_wrapper(annonce: Dict) -> bool:
+        """
+        Wrapper function to process an annonce with semaphore for concurrency control.
+        
+        Args:
+            annonce (Dict): The annonce document to process.
+        
+        Returns:
+            bool: True if the annonce was processed successfully, False otherwise.
+        """
+        nonlocal processed_count
         async with semaphore:
             result = await process_annonce_images(annonce, annonce["idSec"], annonce.get("images", []))
-            remaining = semaphore._value + len(semaphore._waiters) if semaphore._waiters else semaphore._value
-            logger.info(f"{remaining + (total_to_process - processed_count - 1)} annonce a traite")
+            processed_count += 1
+            remaining = total_to_process - processed_count
+            logger.info(f"{remaining} annonce a traite")
             return bool(result)
 
     tasks = [process_annonce_wrapper(annonce) for annonce in annonces_to_process]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     processed_count = sum(1 for res in results if res is True)
 
+    # Debug: Check the state of realStateFinale after processing
+    finale_count_after = await dest_db["realStateFinale"].count_documents({})
+    logger.info(f"📊 realStateFinale contient {finale_count_after} documents après traitement")
+
     await close_db()
     return {"processed": processed_count}
 
 async def process_annonce_images(annonce: Dict, annonce_id: str, image_urls: List[str]) -> Dict:
+    """
+    Process images for a single annonce: upload to Backblaze, update URLs, and transfer to realStateFinale.
+    
+    Args:
+        annonce (Dict): The annonce document to process.
+        annonce_id (str): The ID of the annonce (idSec).
+        image_urls (List[str]): List of image URLs to process.
+    
+    Returns:
+        Dict: A dictionary containing the annonce ID and updated image URLs, or None if processing fails.
+    """
     # Step 1: Upload images to Backblaze
     upload_tasks = [
         upload_image_to_b2(
@@ -76,9 +116,16 @@ async def process_annonce_images(annonce: Dict, annonce_id: str, image_urls: Lis
             updated_image_urls.append("N/A")
             failed_uploads += 1
 
-    # Check if all uploads failed
+    # Log if all uploads failed and use original URLs
     if failed_uploads == len(uploaded_urls):
-        return None
+        logger.warning(f"⚠️ Toutes les images ont échoué pour l'annonce {annonce_id}, transfert avec les URLs originales")
+        updated_image_urls = image_urls  # Use original URLs if all uploads fail
+    else:
+        # Replace failed uploads with original URLs
+        updated_image_urls = [
+            updated_url if updated_url != "N/A" else original_url
+            for updated_url, original_url in zip(updated_image_urls, image_urls)
+        ]
 
     # Step 2: Update the annonce with new image URLs
     annonce["images"] = updated_image_urls
@@ -97,6 +144,7 @@ async def process_annonce_images(annonce: Dict, annonce_id: str, image_urls: Lis
     # Transfer to realStateFinale
     success = await transfer_annonce(annonce_to_transfer)
     if not success:
+        logger.error(f"❌ Échec du transfert de l'annonce {annonce_id} vers realStateFinale")
         return None
 
     # Step 4: Update the annonce in realStateWithAgence with new image URLs
@@ -105,6 +153,7 @@ async def process_annonce_images(annonce: Dict, annonce_id: str, image_urls: Lis
         {"$set": {"images": updated_image_urls, "nbrImages": len(updated_image_urls), "scraped_at": datetime.utcnow()}}
     )
 
+    logger.info(f"✅ Annonce {annonce_id} traitée avec succès")
     return {"idSec": annonce_id, "images": updated_image_urls}
 
 if __name__ == "__main__":

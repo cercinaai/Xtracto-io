@@ -81,6 +81,7 @@ def detect_watermark_in_corner(gray_image: np.ndarray, corner: str, threshold_ra
             return (max(0, x - 10), max(0, y - 10), min(w + 20, width - x), min(h + 20, height - y))
     return None
 
+   
 async def upload_image_to_b2(image_url: str, filename: str, target: str = "real_estate") -> str:
     max_retries = 3
     backoff_factor = 0.5
@@ -88,6 +89,7 @@ async def upload_image_to_b2(image_url: str, filename: str, target: str = "real_
         try:
             if not image_url.startswith('http'):
                 raise ValueError("URL invalide")
+            logger.debug(f"📥 Téléchargement de l'image {image_url}")
             response = await asyncio.to_thread(
                 requests.get,
                 image_url,
@@ -96,16 +98,22 @@ async def upload_image_to_b2(image_url: str, filename: str, target: str = "real_
             )
             response.raise_for_status()
             if not response.content:
+                logger.warning(f"⚠️ Contenu vide pour l'image {image_url}")
                 return "N/A"
+            logger.debug(f"✂️ Suppression du filigrane pour {image_url}")
             cropped_buffer = crop_watermark_from_image(response.content)
             b2_api = await get_b2_api()
             bucket = await asyncio.to_thread(b2_api.get_bucket_by_name, B2_BUCKET_NAME)
             target_name = f"{target}/{filename}"
+            logger.debug(f"📤 Upload vers Backblaze: {target_name}")
             await asyncio.to_thread(bucket.upload_bytes, cropped_buffer, target_name, content_type='image/jpeg')
-            return f"https://f003.backblazeb2.com/file/{B2_BUCKET_NAME}/{target_name}"
+            uploaded_url = f"https://f003.backblazeb2.com/file/{B2_BUCKET_NAME}/{target_name}"
+            logger.debug(f"✅ Image uploadée avec succès: {uploaded_url}")
+            return uploaded_url
         except Exception as e:
             if attempt < max_retries - 1:
+                logger.warning(f"⚠️ Tentative {attempt + 1}/{max_retries} échouée pour {image_url}: {str(e)}")
                 await asyncio.sleep(backoff_factor * (2 ** attempt))
                 continue
-            logger.warning(f"⚠️ Échec upload {image_url} : {e}")
+            logger.error(f"❌ Échec définitif pour {image_url} après {max_retries} tentatives: {str(e)}")
             return "N/A"
