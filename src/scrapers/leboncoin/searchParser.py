@@ -103,16 +103,20 @@ async def navigate_to_locations(page, max_attempts=3):
             try:
                 await locations_link.wait_for(state="visible", timeout=30000)
                 logger.info("✅ Lien 'Locations' visible après défilement.")
-            except PlaywrightTimeoutError:
-                logger.error("❌ Lien 'Locations' non trouvé dans le délai imparti après défilement.")
+                # Vérifier si le lien est cliquable
+                await expect(locations_link).to_be_enabled(timeout=5000)
+                logger.info("✅ Lien 'Locations' est cliquable.")
+            except PlaywrightTimeoutError as e:
+                logger.error(f"❌ Lien 'Locations' non trouvé ou non cliquable dans le délai imparti : {e}")
                 await page.screenshot(path=f"locations_link_error_attempt_{attempt}.png")
-                raise Exception("Lien 'Locations' non visible sur la page.")
+                raise Exception("Lien 'Locations' non visible ou non cliquable sur la page.")
 
             gimii_before_click = await close_gimii_popup(page)
             if gimii_before_click:
                 logger.info("📜 Défilement supplémentaire après fermeture de Gimii avant clic...")
                 await human_like_scroll_to_element_search(page, LOCATIONS_LINK, scroll_steps=2, jitter=True)
                 await locations_link.wait_for(state="visible", timeout=10000)
+                await expect(locations_link).to_be_enabled(timeout=5000)
 
             # Étape 4 : Vérifier les blocages anti-bot avant le clic
             captcha_iframe = page.locator('iframe[title="DataDome CAPTCHA"]')
@@ -129,15 +133,20 @@ async def navigate_to_locations(page, max_attempts=3):
                 await page.screenshot(path=f"anti_bot_error_attempt_{attempt}.png")
                 raise Exception("Blocage anti-bot détecté avant clic sur Locations")
 
-            # Étape 5 : Cliquer sur le lien "Locations"
+            # Étape 5 : Cliquer sur le lien "Locations" avec une attente explicite
             await human_like_delay_search(0.5, 1.5)
             if not await check_and_solve_captcha(page, "clic sur Locations"):
                 raise Exception("Échec CAPTCHA avant clic sur Locations")
-            await human_like_click_search(page, LOCATIONS_LINK, move_cursor=True, click_variance=30)
+
+            # Attendre une requête réseau pour confirmer que le clic déclenche une navigation
+            async with page.expect_navigation(timeout=60000) as navigation_info:
+                await human_like_click_search(page, LOCATIONS_LINK, move_cursor=True, click_variance=30)
+                logger.info("🖱️ Clic sur le lien 'Locations' effectué.")
+            await navigation_info.value  # Attendre que la navigation soit terminée
 
             # Étape 6 : Attendre la redirection et vérifier la page "Locations"
             logger.info("⏳ Attente de la redirection vers la page 'Locations'...")
-            await page.wait_for_load_state("domcontentloaded", timeout=30000)
+            await page.wait_for_load_state("domcontentloaded", timeout=60000)
 
             # Vérifier la présence du bouton "Afficher tous les filtres" ou d'un conteneur de résultats
             navigation_confirmed = False
@@ -162,7 +171,7 @@ async def navigate_to_locations(page, max_attempts=3):
                     if EXPECTED_LOCATIONS_URL not in current_url:
                         logger.info("🔄 Tentative de navigation JavaScript...")
                         await page.evaluate(f"window.location.href = '{EXPECTED_LOCATIONS_URL}'")
-                        await page.wait_for_load_state("domcontentloaded", timeout=30000)
+                        await page.wait_for_load_state("domcontentloaded", timeout=60000)
                         current_url = page.url
                         logger.info(f"🌐 URL après navigation JavaScript : {current_url}")
                         # Vérifier à nouveau les éléments
@@ -207,9 +216,14 @@ async def navigate_to_locations(page, max_attempts=3):
             if attempt == max_attempts:
                 logger.error("❌ Échec après toutes les tentatives.")
                 raise
-            await page.reload()
-            await human_like_delay_search(5, 10)
-            await wait_for_page_load(page)
+            # Recharger la page et attendre
+            try:
+                await page.reload(timeout=60000)
+                await human_like_delay_search(5, 10)
+                await wait_for_page_load(page)
+            except Exception as reload_error:
+                logger.error(f"❌ Échec du rechargement de la page : {reload_error}")
+                raise
 
 async def apply_filters(page, api_responses: list):
     FILTRES_BTN = 'button[title="Afficher tous les filtres"]'
