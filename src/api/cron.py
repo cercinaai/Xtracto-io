@@ -39,8 +39,8 @@ async def start_cron():
     """Démarre une boucle continue pour vérifier et traiter les nouvelles annonces."""
     while True:
         await process_images_job()
-        # Attendre 30 secondes avant la prochaine vérification
-        await asyncio.sleep(30)
+        # Attendre 5 minutes avant la prochaine vérification
+        await asyncio.sleep(300)
 
 if __name__ == "__main__":
     # Lancer le processus

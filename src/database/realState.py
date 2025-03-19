@@ -3,6 +3,9 @@ from typing import Optional, List, Dict
 from datetime import datetime
 from loguru import logger
 from src.database.database import get_source_db, get_destination_db
+from src.utils.b2_utils import upload_image_to_b2
+from urllib.parse import urlparse
+import asyncio
 
 class RealState(BaseModel):
     idSec: str
@@ -71,11 +74,9 @@ async def save_annonce_to_db(annonce: RealState) -> bool:
     db = get_source_db()
     collection = db["realState"]
     if await annonce_exists_by_unique_key(annonce.idSec, annonce.title, annonce.price):
-        logger.info(f"ℹ️ Annonce {annonce.idSec} déjà existante dans la base source")
         return False
     annonce_dict = annonce.dict(exclude_unset=True)
     result = await collection.insert_one(annonce_dict)
-    logger.info(f"✅ Annonce {annonce.idSec} enregistrée dans la base source avec _id: {result.inserted_id}")
     return True
 
 async def annonce_exists(annonce_id: str) -> bool:
@@ -96,11 +97,7 @@ async def update_annonce_images(annonce_id: str, images: List[str], nbrImages: i
         {"idSec": annonce_id},
         {"$set": {"images": images, "nbrImages": nbrImages, "scraped_at": datetime.utcnow()}}
     )
-    if result.modified_count > 0:
-        logger.info(f"✅ Images de l'annonce {annonce_id} mises à jour")
-        return True
-    logger.warning(f"⚠️ Aucune mise à jour effectuée pour l'annonce {annonce_id}")
-    return False
+    return result.modified_count > 0
 
 async def transfer_annonce(annonce: Dict) -> bool:
     source_db = get_source_db()
@@ -119,13 +116,83 @@ async def transfer_annonce(annonce: Dict) -> bool:
                 {"$set": update_data}
             )
             if result.modified_count > 0:
-                logger.info(f"✅ Annonce {annonce['idSec']} mise à jour avec attributs manquants")
                 return True
-        logger.info(f"ℹ️ Annonce {annonce['idSec']} déjà complète dans la destination")
         return False
     else:
         if "_id" not in annonce:
-            logger.warning(f"⚠️ Annonce {annonce['idSec']} sans _id dans la source, création sans _id spécifique")
+            pass  # No logging as requested
         await dest_collection.insert_one(annonce)
-        logger.info(f"✅ Annonce {annonce['idSec']} transférée avec tous ses attributs et son _id original vers la base destination")
         return True
+
+async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
+    """
+    Transfer an annonce from realStateWithAgence to realStateFinale, processing images if not uploaded to Backblaze.
+    
+    Args:
+        annonce (Dict): The annonce document to transfer.
+    
+    Returns:
+        Dict: A dictionary containing the annonce ID and updated image URLs, or None if processing fails.
+    """
+    source_db = get_source_db()
+    dest_db = get_destination_db()
+    annonce_id = annonce["idSec"]
+    image_urls = annonce.get("images", [])
+
+    # Step 1: Process images if not already uploaded to Backblaze
+    upload_tasks = [
+        upload_image_to_b2(
+            image_url,
+            "".join(c if c.isalnum() or c in "-_." else "_" for c in urlparse(image_url).path.split('/')[-1] or "default.jpg")
+        )
+        for image_url in image_urls if image_url.startswith('http')
+    ]
+    uploaded_urls = await asyncio.gather(*upload_tasks, return_exceptions=True)
+    updated_image_urls = []
+    failed_uploads = 0
+    for url in uploaded_urls:
+        if isinstance(url, str) and url != "N/A":
+            updated_image_urls.append(url)
+        else:
+            updated_image_urls.append("N/A")
+            failed_uploads += 1
+
+    # Use original URLs if all uploads fail
+    if failed_uploads == len(uploaded_urls):
+        updated_image_urls = image_urls  # Use original URLs if all uploads fail
+    else:
+        # Replace failed uploads with original URLs
+        updated_image_urls = [
+            updated_url if updated_url != "N/A" else original_url
+            for updated_url, original_url in zip(updated_image_urls, image_urls)
+        ]
+
+    # Step 2: Update the annonce with new image URLs
+    annonce["images"] = updated_image_urls
+    annonce["nbrImages"] = len(updated_image_urls)
+    annonce["scraped_at"] = datetime.utcnow()
+
+    # Step 3: Transfer the annonce to realStateFinale
+    dest_collection = dest_db["realStateFinale"]
+    existing = await dest_collection.find_one({"idSec": annonce["idSec"]})
+    if existing:
+        # If the annonce already exists, update it with new attributes
+        update_data = {k: v for k, v in annonce.items() if k != "_id"}
+        await dest_collection.update_one(
+            {"idSec": annonce["idSec"]},
+            {"$set": update_data}
+        )
+    else:
+        # Ensure all attributes are copied, including _id
+        annonce_to_transfer = annonce.copy()
+        if "_id" in annonce_to_transfer:
+            annonce_to_transfer["_id"] = annonce["_id"]  # Preserve the _id
+        await dest_collection.insert_one(annonce_to_transfer)
+
+    # Step 4: Update the annonce in realStateWithAgence with new image URLs
+    await source_db["realStateWithAgence"].update_one(
+        {"idSec": annonce_id},
+        {"$set": {"images": updated_image_urls, "nbrImages": len(updated_image_urls), "scraped_at": datetime.utcnow()}}
+    )
+
+    return {"idSec": annonce_id, "images": updated_image_urls}
