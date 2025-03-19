@@ -21,7 +21,7 @@ SHIFTER_PROXIES = [
 ]
 
 async def setup_browser():
-    kameleo_host = os.getenv("KAMELEO_HOST", "192.168.122.91")  # Valeur par défaut
+    kameleo_host = os.getenv("192.168.122.91")  # Valeur par défaut
     kameleo_port = int(os.getenv("KAMELEO_PORT", 5001))         # Valeur par défaut
     client = KameleoLocalApiClient(endpoint=f'http://{kameleo_host}:{kameleo_port}', retry_total=0)
 
