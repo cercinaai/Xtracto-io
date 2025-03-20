@@ -20,12 +20,16 @@ running_tasks: Dict[str, bool] = {
 # Stockage des processus actifs
 active_processes: Dict[str, Process] = {}
 
-def run_in_process(queue: Queue, func, task_name: str, skip: int = 0, limit: int = None):
+def run_in_process(queue: Queue, func, task_name: str, **kwargs):
     """Exécute une fonction dans un processus et met le résultat dans la queue."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(func(queue, skip=skip, limit=limit))
+        # Only pass kwargs if the function is process_and_transfer_images
+        if task_name == "process_and_transfer":
+            loop.run_until_complete(func(max_concurrent_tasks=20, **kwargs))
+        else:
+            loop.run_until_complete(func(queue))
     except Exception as e:
         queue.put({"status": "error", "message": str(e)})
     finally:
@@ -90,7 +94,8 @@ async def process_and_transfer_images_endpoint(background_tasks: BackgroundTasks
 
 async def process_and_transfer_task(skip: int = 0, limit: int = None):
     try:
-        result = await process_and_transfer_images(max_concurrent_tasks=20, skip=skip, limit=limit)
+        queue = Queue()  # Create a dummy queue since process_and_transfer_images doesn't use it
+        result = await run_in_process(queue, process_and_transfer_images, "process_and_transfer", skip=skip, limit=limit)
         logger.info(f"✅ Traitement terminé : {result['processed']} annonces traitées")
     except Exception as e:
         logger.error(f"⚠️ Erreur lors du traitement : {e}")

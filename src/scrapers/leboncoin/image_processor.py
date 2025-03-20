@@ -4,9 +4,9 @@ from src.database.realState import transfer_from_withagence_to_finale
 from src.database.database import init_db, close_db, get_source_db, get_destination_db
 from loguru import logger
 
-# Configure logger to only show INFO messages in the desired format
+# Remove all existing handlers and configure the logger to output only the desired format
 logger.remove()  # Remove default handler
-logger.add(lambda msg: print(msg, end=""), level="INFO", format="annonce a traite : {message}")
+logger.add(lambda msg: print(f"annonce a traite : {msg.record['message']}"), level="INFO", format="{message}")
 
 async def process_and_transfer_images(max_concurrent_tasks: int = 20, skip: int = 0, limit: int = None) -> Dict:
     """
