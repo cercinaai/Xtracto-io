@@ -8,12 +8,14 @@ from loguru import logger
 logger.remove()  # Remove default handler
 logger.add(lambda msg: print(msg, end=""), level="INFO", format="annonce a traite : {message}")
 
-async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
+async def process_and_transfer_images(max_concurrent_tasks: int = 20, skip: int = 0, limit: int = None) -> Dict:
     """
     Process images for annonces in realStateWithAgence and transfer them to realStateFinale.
     
     Args:
         max_concurrent_tasks (int): Maximum number of concurrent tasks for processing annonces.
+        skip (int): Number of documents to skip (for pagination).
+        limit (int): Maximum number of documents to process (for pagination). If None, process all.
     
     Returns:
         Dict: A dictionary containing the number of processed annonces.
@@ -29,9 +31,13 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
             "$exists": True,
             "$ne": [],
             "$not": {"$elemMatch": {"$regex": "https://f003.backblazeb2.com"}}
-        }
+        },
+        "processed": {"$ne": True}  # Only fetch unprocessed documents
     }
-    annonces_with_agence = await source_db["realStateWithAgence"].find(query).to_list(length=None)
+    cursor = source_db["realStateWithAgence"].find(query).skip(skip)
+    if limit is not None:
+        cursor = cursor.limit(limit)
+    annonces_with_agence = await cursor.to_list(length=None)
     total_annonces = len(annonces_with_agence)
     logger.info(total_annonces)
 
@@ -65,6 +71,12 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
         nonlocal processed_count
         async with semaphore:
             result = await transfer_from_withagence_to_finale(annonce)
+            if result and not result.get("skipped", False):
+                # Mark the annonce as processed in realStateWithAgence
+                await source_db["realStateWithAgence"].update_one(
+                    {"idSec": annonce["idSec"]},
+                    {"$set": {"processed": True}}
+                )
             processed_count += 1
             remaining = total_to_process - processed_count
             logger.info(remaining)
@@ -78,4 +90,7 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 20) -> Dict:
     return {"processed": processed_count}
 
 if __name__ == "__main__":
-    asyncio.run(process_and_transfer_images())
+    import sys
+    skip = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
+    asyncio.run(process_and_transfer_images(max_concurrent_tasks=20, skip=skip, limit=limit))

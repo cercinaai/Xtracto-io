@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from src.scrapers.leboncoin.image_processor import process_and_transfer_images
-from src.scrapers.leboncoin.firstScrapper import open_leboncoin  # Importer directement open_leboncoin
+from src.scrapers.leboncoin.firstScrapper import open_leboncoin
 from src.scrapers.leboncoin.traiteAnnonces import traite_annonces
-from src.scrapers.leboncoin.leboncoinLoopScrapper import open_leboncoin_loop  # Importer directement open_leboncoin_loop
+from src.scrapers.leboncoin.leboncoinLoopScrapper import open_leboncoin_loop
 from loguru import logger
 from multiprocessing import Process, Queue
 from typing import Dict
@@ -20,12 +20,12 @@ running_tasks: Dict[str, bool] = {
 # Stockage des processus actifs
 active_processes: Dict[str, Process] = {}
 
-def run_in_process(queue: Queue, func, task_name: str):
+def run_in_process(queue: Queue, func, task_name: str, skip: int = 0, limit: int = None):
     """Exécute une fonction dans un processus et met le résultat dans la queue."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(func(queue))
+        loop.run_until_complete(func(queue, skip=skip, limit=limit))
     except Exception as e:
         queue.put({"status": "error", "message": str(e)})
     finally:
@@ -80,17 +80,17 @@ async def process_agences_task():
         running_tasks["process_agences"] = False
 
 @api_router.get("/scrape/leboncoin/process_and_transfer")
-async def process_and_transfer_images_endpoint(background_tasks: BackgroundTasks):
+async def process_and_transfer_images_endpoint(background_tasks: BackgroundTasks, skip: int = 0, limit: int = None):
     if running_tasks["process_and_transfer"]:
         return {"message": "Le traitement et transfert des images est déjà en cours", "status": "running"}
     running_tasks["process_and_transfer"] = True
-    background_tasks.add_task(process_and_transfer_task)
-    logger.info("📸 Lancement du traitement et transfert des images en arrière-plan")
-    return {"message": "Traitement et transfert des images lancé en arrière-plan", "status": "started"}
+    background_tasks.add_task(process_and_transfer_task, skip=skip, limit=limit)
+    logger.info(f"📸 Lancement du traitement et transfert des images en arrière-plan (skip={skip}, limit={limit})")
+    return {"message": f"Traitement et transfert des images lancé en arrière-plan (skip={skip}, limit={limit})", "status": "started"}
 
-async def process_and_transfer_task():
+async def process_and_transfer_task(skip: int = 0, limit: int = None):
     try:
-        result = await process_and_transfer_images(max_concurrent_tasks=20)
+        result = await process_and_transfer_images(max_concurrent_tasks=20, skip=skip, limit=limit)
         logger.info(f"✅ Traitement terminé : {result['processed']} annonces traitées")
     except Exception as e:
         logger.error(f"⚠️ Erreur lors du traitement : {e}")
@@ -99,7 +99,6 @@ async def process_and_transfer_task():
 
 @api_router.get("/scrape/leboncoin/loop")
 async def scrape_loop_endpoint(background_tasks: BackgroundTasks):
-    # Suppression de la vérification pour toujours relancer
     running_tasks["scrape_loop"] = True
     queue = Queue()
     process = Process(target=run_in_process, args=(queue, open_leboncoin_loop, "scrape_loop"))

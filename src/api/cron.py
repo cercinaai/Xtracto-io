@@ -21,11 +21,11 @@ logger.add(
     format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
 )
 
-async def process_images_job():
+async def process_images_job(skip: int = 0, limit: int = None):
     """Tâche pour traiter les images des annonces de la collection realStateWithAgence."""
     try:
         await init_db()  # Initialiser la connexion à la base de données
-        result = await process_and_transfer_images(max_concurrent_tasks=20)
+        result = await process_and_transfer_images(max_concurrent_tasks=20, skip=skip, limit=limit)
         if result["processed"] > 0:
             logger.info(f"{result['processed']} annonces traitees")
         else:
@@ -35,13 +35,14 @@ async def process_images_job():
     finally:
         await close_db()  # Fermer la connexion à la base de données
 
-async def start_cron():
+async def start_cron(skip: int = 0, limit: int = None):
     """Démarre une boucle continue pour vérifier et traiter les nouvelles annonces."""
     while True:
-        await process_images_job()
+        await process_images_job(skip=skip, limit=limit)
         # Attendre 5 minutes avant la prochaine vérification
         await asyncio.sleep(300)
 
 if __name__ == "__main__":
-    # Lancer le processus
-    asyncio.run(start_cron())
+    skip = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
+    asyncio.run(start_cron(skip=skip, limit=limit))
