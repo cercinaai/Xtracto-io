@@ -27,7 +27,7 @@ def run_in_process(queue: Queue, func, task_name: str, **kwargs):
     try:
         # Only pass kwargs if the function is process_and_transfer_images
         if task_name == "process_and_transfer":
-            loop.run_until_complete(func(max_concurrent_tasks=20, **kwargs))
+            loop.run_until_complete(func(max_concurrent_tasks=50, **kwargs))
         else:
             loop.run_until_complete(func(queue))
     except Exception as e:
@@ -84,18 +84,18 @@ async def process_agences_task():
         running_tasks["process_agences"] = False
 
 @api_router.get("/scrape/leboncoin/process_and_transfer")
-async def process_and_transfer_images_endpoint(background_tasks: BackgroundTasks, skip: int = 0, limit: int = None):
+async def process_and_transfer_images_endpoint(background_tasks: BackgroundTasks):
     if running_tasks["process_and_transfer"]:
         return {"message": "Le traitement et transfert des images est déjà en cours", "status": "running"}
     running_tasks["process_and_transfer"] = True
-    background_tasks.add_task(process_and_transfer_task, skip=skip, limit=limit)
-    logger.info(f"📸 Lancement du traitement et transfert des images en arrière-plan (skip={skip}, limit={limit})")
-    return {"message": f"Traitement et transfert des images lancé en arrière-plan (skip={skip}, limit={limit})", "status": "started"}
+    background_tasks.add_task(process_and_transfer_task)
+    logger.info("📸 Lancement du traitement et transfert des images en arrière-plan")
+    return {"message": "Traitement et transfert des images lancé en arrière-plan", "status": "started"}
 
-async def process_and_transfer_task(skip: int = 0, limit: int = None):
+async def process_and_transfer_task():
     try:
         queue = Queue()  # Create a dummy queue since process_and_transfer_images doesn't use it
-        result = await run_in_process(queue, process_and_transfer_images, "process_and_transfer", skip=skip, limit=limit)
+        result = await run_in_process(queue, process_and_transfer_images, "process_and_transfer")
         logger.info(f"✅ Traitement terminé : {result['processed']} annonces traitées")
     except Exception as e:
         logger.error(f"⚠️ Erreur lors du traitement : {e}")

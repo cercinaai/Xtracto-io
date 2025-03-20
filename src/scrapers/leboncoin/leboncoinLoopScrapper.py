@@ -137,8 +137,7 @@ async def open_leboncoin_loop(queue: Queue):
         if should_restart:
             logger.info("🔄 Deux annonces consécutives existantes détectées. Redémarrage immédiat du cycle...")
             continue  # Relance immédiatement sans pause
-        logger.info(f"⏳ Pause avant le cycle {cycle_count + 1}...")
-        await asyncio.sleep(random.uniform(300, 600))  # Pause de 5 à 10 minutes entre les cycles
+        logger.info(f"🔄 Redémarrage immédiat du cycle {cycle_count + 1}...")
 
 async def access_leboncoin_loop():
     queue = Queue()

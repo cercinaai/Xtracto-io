@@ -56,8 +56,10 @@ class RealState(BaseModel):
     idAgence: Optional[str] = None
     agenceName: Optional[str] = None
     scraped_at: Optional[datetime] = None
+    processed: Optional[bool] = None  # Add processed field
+    processed_at: Optional[datetime] = None  # Add processed_at field
 
-    @validator("publication_date", "index_date", "expiration_date", pre=True, always=True)
+    @validator("publication_date", "index_date", "expiration_date", "scraped_at", "processed_at", pre=True, always=True)
     def parse_date(cls, v):
         if not v or v == "":
             return None
