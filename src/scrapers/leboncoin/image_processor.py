@@ -29,15 +29,11 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 50, skip: int 
     # Fetch total count of unprocessed annonces
     query = {
         "idAgence": {"$exists": True},
-        "images": {
-            "$exists": True,
-            "$ne": [],
-            "$not": {"$elemMatch": {"$regex": "https://f003.backblazeb2.com"}}
-        },
+        "images": {"$exists": True, "$ne": []},  # Relax the Backblaze check; we'll handle it in transfer
         "processed": {"$ne": True}
     }
     total_annonces = await source_db["realStateWithAgence"].count_documents(query)
-    logger.info(total_annonces)
+    logger.info(f"Total annonces to process: {total_annonces}")
 
     if total_annonces == 0:
         await close_db()
@@ -51,7 +47,7 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 50, skip: int 
     # Process annonces in batches
     processed_count = 0
     total_to_process = min(limit, total_annonces - skip) if limit else total_annonces - skip
-    logger.info(total_to_process)
+    logger.info(f"Total to process after skip/limit: {total_to_process}")
 
     if total_to_process <= 0:
         await close_db()
@@ -72,16 +68,19 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 50, skip: int 
         async with semaphore:
             try:
                 result = await transfer_from_withagence_to_finale(annonce)
-                if result and not result.get("skipped", False):
-                    # Mark the annonce as processed in realStateWithAgence with a processed_at timestamp
-                    await source_db["realStateWithAgence"].update_one(
-                        {"idSec": annonce["idSec"]},
-                        {"$set": {"processed": True, "processed_at": datetime.utcnow()}}
-                    )
-                    return True
-                return False
+                # Mark as processed even if skipped (e.g., no valid images)
+                await source_db["realStateWithAgence"].update_one(
+                    {"idSec": annonce["idSec"]},
+                    {"$set": {"processed": True, "processed_at": datetime.utcnow()}}
+                )
+                return not result.get("skipped", False)  # Return True if not skipped
             except Exception as e:
                 logger.error(f"Erreur lors du traitement de l'annonce {annonce['idSec']}: {e}")
+                # Mark as processed to avoid infinite loops
+                await source_db["realStateWithAgence"].update_one(
+                    {"idSec": annonce["idSec"]},
+                    {"$set": {"processed": True, "processed_at": datetime.utcnow()}}
+                )
                 return False
 
     # Process in batches
@@ -89,9 +88,8 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 50, skip: int 
     async for annonce in cursor:
         batch.append(annonce)
         if len(batch) >= batch_size:
-            # Filter out annonces already in realStateFinale
-            existing_ids = await dest_db["realStateFinale"].distinct("idSec", {"idSec": {"$in": [a["idSec"] for a in batch]}})
-            annonces_to_process = [a for a in batch if a["idSec"] not in existing_ids]
+            # Remove the check for existing idSec here; handle it in transfer_from_withagence_to_finale
+            annonces_to_process = batch
 
             if annonces_to_process:
                 tasks = [process_annonce_wrapper(annonce) for annonce in annonces_to_process]
@@ -99,13 +97,12 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 50, skip: int 
                 processed_count += sum(1 for res in results if res is True)
 
             remaining = total_to_process - processed_count
-            logger.info(remaining)
+            logger.info(f"Annonces remaining: {remaining}")
             batch = []
 
     # Process remaining annonces in the last batch
     if batch:
-        existing_ids = await dest_db["realStateFinale"].distinct("idSec", {"idSec": {"$in": [a["idSec"] for a in batch]}})
-        annonces_to_process = [a for a in batch if a["idSec"] not in existing_ids]
+        annonces_to_process = batch
 
         if annonces_to_process:
             tasks = [process_annonce_wrapper(annonce) for annonce in annonces_to_process]
@@ -113,7 +110,7 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 50, skip: int 
             processed_count += sum(1 for res in results if res is True)
 
         remaining = total_to_process - processed_count
-        logger.info(remaining)
+        logger.info(f"Annonces remaining: {remaining}")
 
     await close_db()
     return {"processed": processed_count}

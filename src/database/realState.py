@@ -56,8 +56,8 @@ class RealState(BaseModel):
     idAgence: Optional[str] = None
     agenceName: Optional[str] = None
     scraped_at: Optional[datetime] = None
-    processed: Optional[bool] = None  # Add processed field
-    processed_at: Optional[datetime] = None  # Add processed_at field
+    processed: Optional[bool] = None
+    processed_at: Optional[datetime] = None
 
     @validator("publication_date", "index_date", "expiration_date", "scraped_at", "processed_at", pre=True, always=True)
     def parse_date(cls, v):
@@ -138,43 +138,51 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
     annonce_id = annonce["idSec"]
     image_urls = annonce.get("images", [])
 
-    # Check if images are valid (not all "N/A")
+    # Check if images are valid (not all "N/A") and need processing
     if not image_urls or all(url == "N/A" for url in image_urls):
-        # Skip this annonce as it has no valid images to process
-        return {"idSec": annonce_id, "images": image_urls, "skipped": True}
-
-    # Step 1: Process images if not already uploaded to Backblaze
-    upload_tasks = [
-        upload_image_to_b2(
-            image_url,
-            "".join(c if c.isalnum() or c in "-_." else "_" for c in urlparse(image_url).path.split('/')[-1] or "default.jpg")
-        )
-        for image_url in image_urls if image_url.startswith('http')
-    ]
-    uploaded_urls = await asyncio.gather(*upload_tasks, return_exceptions=True)
-    updated_image_urls = []
-    failed_uploads = 0
-    for url in uploaded_urls:
-        if isinstance(url, str) and url != "N/A":
-            updated_image_urls.append(url)
-        else:
-            updated_image_urls.append("N/A")
-            failed_uploads += 1
-
-    # Use original URLs if all uploads fail
-    if failed_uploads == len(uploaded_urls) and upload_tasks:
-        updated_image_urls = image_urls  # Use original URLs if all uploads fail
+        # Transfer the annonce even if it has no valid images
+        annonce["images"] = image_urls
+        annonce["nbrImages"] = len(image_urls)
+        annonce["scraped_at"] = datetime.utcnow()
     else:
-        # Replace failed uploads with original URLs
-        updated_image_urls = [
-            updated_url if updated_url != "N/A" else original_url
-            for updated_url, original_url in zip(updated_image_urls, image_urls)
-        ]
+        # Check if images need processing (not already on Backblaze)
+        need_processing = any(not url.startswith("https://f003.backblazeb2.com") for url in image_urls if url != "N/A")
+        if need_processing:
+            # Step 1: Process images
+            upload_tasks = [
+                upload_image_to_b2(
+                    image_url,
+                    "".join(c if c.isalnum() or c in "-_." else "_" for c in urlparse(image_url).path.split('/')[-1] or "default.jpg")
+                )
+                for image_url in image_urls if image_url.startswith('http') and not image_url.startswith("https://f003.backblazeb2.com")
+            ]
+            uploaded_urls = await asyncio.gather(*upload_tasks, return_exceptions=True)
+            updated_image_urls = []
+            failed_uploads = 0
+            for url in uploaded_urls:
+                if isinstance(url, str) and url != "N/A":
+                    updated_image_urls.append(url)
+                else:
+                    updated_image_urls.append("N/A")
+                    failed_uploads += 1
 
-    # Step 2: Update the annonce with new image URLs
-    annonce["images"] = updated_image_urls
-    annonce["nbrImages"] = len(updated_image_urls)
-    annonce["scraped_at"] = datetime.utcnow()
+            # Use original URLs if all uploads fail
+            if failed_uploads == len(uploaded_urls) and upload_tasks:
+                updated_image_urls = image_urls
+            else:
+                # Replace failed uploads with original URLs
+                updated_image_urls = [
+                    updated_url if updated_url != "N/A" else original_url
+                    for updated_url, original_url in zip(updated_image_urls, image_urls)
+                ]
+
+            # Step 2: Update the annonce with new image URLs
+            annonce["images"] = updated_image_urls
+            annonce["nbrImages"] = len(updated_image_urls)
+            annonce["scraped_at"] = datetime.utcnow()
+        else:
+            # Images are already on Backblaze; no processing needed
+            annonce["scraped_at"] = datetime.utcnow()
 
     # Step 3: Transfer the annonce to realStateFinale
     dest_collection = dest_db["realStateFinale"]
@@ -193,10 +201,14 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
             annonce_to_transfer["_id"] = annonce["_id"]  # Preserve the _id
         await dest_collection.insert_one(annonce_to_transfer)
 
-    # Step 4: Update the annonce in realStateWithAgence with new image URLs
+    # Step 4: Update the annonce in realStateWithAgence with new image URLs (if applicable)
     await source_db["realStateWithAgence"].update_one(
         {"idSec": annonce_id},
-        {"$set": {"images": updated_image_urls, "nbrImages": len(updated_image_urls), "scraped_at": datetime.utcnow()}}
+        {"$set": {
+            "images": annonce["images"],
+            "nbrImages": annonce["nbrImages"],
+            "scraped_at": datetime.utcnow()
+        }}
     )
 
-    return {"idSec": annonce_id, "images": updated_image_urls}
+    return {"idSec": annonce_id, "images": annonce["images"], "skipped": False}
