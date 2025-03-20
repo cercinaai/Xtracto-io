@@ -9,7 +9,7 @@ from loguru import logger
 logger.remove()  # Remove default handler
 logger.add(lambda msg: print(f"annonce a traite : {msg.record['message']}"), level="INFO", format="{message}")
 
-async def process_and_transfer_images(max_concurrent_tasks: int = 50, skip: int = 0, limit: int = None, batch_size: int = 100) -> Dict:
+async def process_and_transfer_images(max_concurrent_tasks: int = 10, skip: int = 0, limit: int = None, batch_size: int = 100) -> Dict:
     """
     Process images for annonces in realStateWithAgence and transfer them to realStateFinale.
     
@@ -29,7 +29,7 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 50, skip: int 
     # Fetch total count of unprocessed annonces
     query = {
         "idAgence": {"$exists": True},
-        "images": {"$exists": True, "$ne": []},  # Relax the Backblaze check; we'll handle it in transfer
+        "images": {"$exists": True, "$ne": []},
         "processed": {"$ne": True}
     }
     total_annonces = await source_db["realStateWithAgence"].count_documents(query)
@@ -88,7 +88,6 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 50, skip: int 
     async for annonce in cursor:
         batch.append(annonce)
         if len(batch) >= batch_size:
-            # Remove the check for existing idSec here; handle it in transfer_from_withagence_to_finale
             annonces_to_process = batch
 
             if annonces_to_process:
@@ -119,4 +118,4 @@ if __name__ == "__main__":
     import sys
     skip = int(sys.argv[1]) if len(sys.argv) > 1 else 0
     limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
-    asyncio.run(process_and_transfer_images(max_concurrent_tasks=50, skip=skip, limit=limit))
+    asyncio.run(process_and_transfer_images(max_concurrent_tasks=10, skip=skip, limit=limit))

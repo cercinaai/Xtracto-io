@@ -50,14 +50,14 @@ async def process_images_job():
         skip = 0
         batch_size = 1000  # Process 1000 annonces at a time
         while True:
-            result = await process_and_transfer_images(max_concurrent_tasks=50, skip=skip, limit=batch_size)
+            result = await process_and_transfer_images(max_concurrent_tasks=10, skip=skip, limit=None, batch_size=batch_size)
             processed = result["processed"]
             if processed > 0:
                 logger.info(f"{processed} annonces traitees dans ce lot")
             else:
                 logger.info("Aucune annonce a traiter dans ce lot")
                 break  # Exit the loop if no more annonces to process
-            skip += batch_size
+            skip += processed
 
     except Exception as e:
         logger.error(f"Erreur lors du traitement des images : {e}")

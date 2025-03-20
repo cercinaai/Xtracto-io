@@ -5,6 +5,11 @@ from src.database.database import get_source_db, get_destination_db
 from src.utils.b2_utils import upload_image_to_b2
 from urllib.parse import urlparse
 import asyncio
+import logging
+
+# Configure logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class RealState(BaseModel):
     idSec: str
@@ -159,16 +164,18 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
             uploaded_urls = await asyncio.gather(*upload_tasks, return_exceptions=True)
             updated_image_urls = []
             failed_uploads = 0
-            for url in uploaded_urls:
+            for idx, url in enumerate(uploaded_urls):
                 if isinstance(url, str) and url != "N/A":
                     updated_image_urls.append(url)
                 else:
                     updated_image_urls.append("N/A")
                     failed_uploads += 1
+                    logger.error(f"Failed to upload image {image_urls[idx]} for annonce {annonce_id}: {url}")
 
             # Use original URLs if all uploads fail
             if failed_uploads == len(uploaded_urls) and upload_tasks:
                 updated_image_urls = image_urls
+                logger.warning(f"All uploads failed for annonce {annonce_id}, using original URLs")
             else:
                 # Replace failed uploads with original URLs
                 updated_image_urls = [
