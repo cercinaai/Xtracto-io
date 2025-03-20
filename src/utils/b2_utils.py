@@ -1,11 +1,14 @@
 import asyncio
-import requests
+import aiohttp
 import cv2
 import numpy as np
 from typing import Optional
 from b2sdk.v2 import InMemoryAccountInfo, B2Api
 from src.config.settings import B2_BUCKET_NAME, B2_ACCESS_KEY, B2_SECRET_KEY
 from loguru import logger
+
+# Global semaphore to limit concurrent uploads to Backblaze
+UPLOAD_SEMAPHORE = asyncio.Semaphore(3)  # Limit to 3 concurrent uploads
 
 # Suppress DEBUG logs unless there's an error
 logger.remove()  # Remove default handler
@@ -92,33 +95,73 @@ def detect_watermark_in_corner(gray_image: np.ndarray, corner: str, threshold_ra
     return None
 
 async def upload_image_to_b2(image_url: str, filename: str, target: str = "real_estate") -> str:
+    """
+    Upload an image to Backblaze B2 after downloading and processing it.
+    
+    Args:
+        image_url (str): URL of the image to upload.
+        filename (str): Name of the file to save in Backblaze.
+        target (str): Target directory in the Backblaze bucket.
+    
+    Returns:
+        str: URL of the uploaded image, or "N/A" if the upload fails.
+    """
     max_retries = 3
-    backoff_factor = 0.5
-    for attempt in range(max_retries):
-        try:
-            if not image_url.startswith('http'):
-                raise ValueError("URL invalide")
-            response = await asyncio.to_thread(
-                requests.get,
-                image_url,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-                timeout=10
-            )
-            response.raise_for_status()
-            if not response.content:
-                logger.warning(f"⚠️ Contenu vide pour l'image {image_url}")
+    initial_backoff = 2  # Start with a 2-second delay to avoid rate-limiting
+
+    if not image_url.startswith('http'):
+        logger.warning(f"Invalid URL: {image_url}")
+        return "N/A"
+
+    async with UPLOAD_SEMAPHORE:  # Limit concurrent uploads
+        for attempt in range(max_retries):
+            try:
+                # Download the image using aiohttp
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        image_url,
+                        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                        timeout=10
+                    ) as response:
+                        if response.status == 404:
+                            logger.warning(f"Image not found (404) at {image_url}")
+                            return "N/A"  # Skip retries for 404 errors
+                        response.raise_for_status()
+                        image_data = await response.read()
+                        if not image_data:
+                            logger.warning(f"Empty content for image {image_url}")
+                            return "N/A"
+
+                # Crop watermark from the image
+                cropped_buffer = await asyncio.to_thread(crop_watermark_from_image, image_data)
+
+                # Upload to Backblaze
+                b2_api = await get_b2_api()
+                bucket = await asyncio.to_thread(b2_api.get_bucket_by_name, B2_BUCKET_NAME)
+                target_name = f"{target}/{filename}"
+                await asyncio.to_thread(bucket.upload_bytes, cropped_buffer, target_name, content_type='image/jpeg')
+                uploaded_url = f"https://f003.backblazeb2.com/file/{B2_BUCKET_NAME}/{target_name}"
+                logger.info(f"Successfully uploaded image {image_url} to {uploaded_url}")
+                return uploaded_url
+
+            except aiohttp.ClientResponseError as e:
+                if e.status == 404:
+                    logger.warning(f"Image not found (404) at {image_url}")
+                    return "N/A"  # Skip retries for 404 errors
+                if attempt < max_retries - 1:
+                    delay = initial_backoff * (2 ** attempt)
+                    logger.warning(f"Attempt {attempt + 1}/{max_retries} failed for {image_url}: {str(e)}. Retrying after {delay}s")
+                    await asyncio.sleep(delay)
+                    continue
+                logger.error(f"Failed to upload {image_url} after {max_retries} attempts: {str(e)}")
                 return "N/A"
-            cropped_buffer = crop_watermark_from_image(response.content)
-            b2_api = await get_b2_api()
-            bucket = await asyncio.to_thread(b2_api.get_bucket_by_name, B2_BUCKET_NAME)
-            target_name = f"{target}/{filename}"
-            await asyncio.to_thread(bucket.upload_bytes, cropped_buffer, target_name, content_type='image/jpeg')
-            uploaded_url = f"https://f003.backblazeb2.com/file/{B2_BUCKET_NAME}/{target_name}"
-            return uploaded_url
-        except Exception as e:
-            if attempt < max_retries - 1:
-                logger.warning(f"⚠️ Tentative {attempt + 1}/{max_retries} échouée pour {image_url}: {str(e)}")
-                await asyncio.sleep(backoff_factor * (2 ** attempt))
-                continue
-            logger.error(f"❌ Échec définitif pour {image_url} après {max_retries} tentatives: {str(e)}")
-            return "N/A"
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    delay = initial_backoff * (2 ** attempt)
+                    logger.warning(f"Attempt {attempt + 1}/{max_retries} failed for {image_url}: {str(e)}. Retrying after {delay}s")
+                    await asyncio.sleep(delay)
+                    continue
+                logger.error(f"Failed to upload {image_url} after {max_retries} attempts: {str(e)}")
+                return "N/A"
+
+        return "N/A"

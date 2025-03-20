@@ -9,7 +9,7 @@ from loguru import logger
 logger.remove()  # Remove default handler
 logger.add(lambda msg: print(f"annonce a traite : {msg.record['message']}"), level="INFO", format="{message}")
 
-async def process_and_transfer_images(max_concurrent_tasks: int = 10, skip: int = 0, limit: int = None, batch_size: int = 100) -> Dict:
+async def process_and_transfer_images(max_concurrent_tasks: int = 5, skip: int = 0, limit: int = None, batch_size: int = 50) -> Dict:
     """
     Process images for annonces in realStateWithAgence and transfer them to realStateFinale.
     
@@ -68,12 +68,12 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 10, skip: int 
         async with semaphore:
             try:
                 result = await transfer_from_withagence_to_finale(annonce)
-                # Mark as processed even if skipped (e.g., no valid images)
+                # Mark as processed
                 await source_db["realStateWithAgence"].update_one(
                     {"idSec": annonce["idSec"]},
                     {"$set": {"processed": True, "processed_at": datetime.utcnow()}}
                 )
-                return not result.get("skipped", False)  # Return True if not skipped
+                return not result.get("skipped", False)
             except Exception as e:
                 logger.error(f"Erreur lors du traitement de l'annonce {annonce['idSec']}: {e}")
                 # Mark as processed to avoid infinite loops
@@ -88,25 +88,22 @@ async def process_and_transfer_images(max_concurrent_tasks: int = 10, skip: int 
     async for annonce in cursor:
         batch.append(annonce)
         if len(batch) >= batch_size:
-            annonces_to_process = batch
-
-            if annonces_to_process:
-                tasks = [process_annonce_wrapper(annonce) for annonce in annonces_to_process]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                processed_count += sum(1 for res in results if res is True)
+            tasks = [process_annonce_wrapper(annonce) for annonce in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            processed_count += sum(1 for res in results if res is True)
 
             remaining = total_to_process - processed_count
             logger.info(f"Annonces remaining: {remaining}")
             batch = []
 
+            # Add a small delay to avoid overwhelming Backblaze
+            await asyncio.sleep(1)
+
     # Process remaining annonces in the last batch
     if batch:
-        annonces_to_process = batch
-
-        if annonces_to_process:
-            tasks = [process_annonce_wrapper(annonce) for annonce in annonces_to_process]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            processed_count += sum(1 for res in results if res is True)
+        tasks = [process_annonce_wrapper(annonce) for annonce in batch]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        processed_count += sum(1 for res in results if res is True)
 
         remaining = total_to_process - processed_count
         logger.info(f"Annonces remaining: {remaining}")
@@ -118,4 +115,4 @@ if __name__ == "__main__":
     import sys
     skip = int(sys.argv[1]) if len(sys.argv) > 1 else 0
     limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
-    asyncio.run(process_and_transfer_images(max_concurrent_tasks=10, skip=skip, limit=limit))
+    asyncio.run(process_and_transfer_images(max_concurrent_tasks=5, skip=skip, limit=limit))

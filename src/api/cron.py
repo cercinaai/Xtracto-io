@@ -35,29 +35,23 @@ async def process_images_job():
         await source_db["realStateWithAgence"].update_many(
             {
                 "idAgence": {"$exists": True},
-                "images": {
-                    "$exists": True,
-                    "$ne": [],
-                    "$not": {"$elemMatch": {"$regex": "https://f003.backblazeb2.com"}}
-                },
+                "images": {"$exists": True, "$ne": []},
                 "processed": True,
                 "scraped_at": {"$gt": "$processed_at"}  # If scraped_at is more recent than processed_at
             },
             {"$set": {"processed": False}}
         )
 
-        # Process all unprocessed annonces in batches
-        skip = 0
-        batch_size = 1000  # Process 1000 annonces at a time
+        # Process unprocessed annonces in small batches
+        batch_size = 50
         while True:
-            result = await process_and_transfer_images(max_concurrent_tasks=10, skip=skip, limit=None, batch_size=batch_size)
+            result = await process_and_transfer_images(max_concurrent_tasks=5, skip=0, limit=batch_size, batch_size=batch_size)
             processed = result["processed"]
             if processed > 0:
                 logger.info(f"{processed} annonces traitees dans ce lot")
             else:
                 logger.info("Aucune annonce a traiter dans ce lot")
                 break  # Exit the loop if no more annonces to process
-            skip += processed
 
     except Exception as e:
         logger.error(f"Erreur lors du traitement des images : {e}")
@@ -134,7 +128,6 @@ async def scraper_cron():
 
 async def start_cron():
     """Démarre les deux crons : un pour les images et un pour les scrapers."""
-    # Lancer les deux tâches en parallèle
     await asyncio.gather(
         process_images_job_loop(),
         scraper_cron()
@@ -144,7 +137,7 @@ async def process_images_job_loop():
     """Boucle pour le traitement des images."""
     while True:
         await process_images_job()
-        await asyncio.sleep(300)  # Attendre 5 minutes avant la prochaine vérification
+        await asyncio.sleep(60)  # Check for new annonces every 60 seconds
 
 if __name__ == "__main__":
     asyncio.run(start_cron())
