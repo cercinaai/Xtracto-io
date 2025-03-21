@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
         logger.success("✅ Connexion aux bases de données établie avec succès")
         # Lancer le processus de traitement des images en continu
         asyncio.create_task(start_cron())
-        logger.info("🚀 Serveur démarré sur http://0.0.0.0:8000")
+        logger.info("🚀 Serveur démarré sur http://0.0.0.0:8002")
     except Exception as e:
         logger.critical(f"🚨 Erreur critique au démarrage : {e}")
         raise SystemExit(1)

@@ -7,6 +7,7 @@ class AgenceModel(BaseModel):
     storeId: str
     name: str
     lien: str
+    CodeSiren: Optional[str] = None  # Add CodeSiren field
     logo: Optional[str] = None
     adresse: Optional[str] = None
     zone_intervention: Optional[str] = None
@@ -35,6 +36,7 @@ async def transfer_agence(storeId: str, name: Optional[str] = None) -> Optional[
                 "storeId": storeId,
                 "name": name if name else f"Agence {storeId}",
                 "lien": f"https://www.leboncoin.fr/boutique/{storeId}",
+                "CodeSiren": None,  # Set CodeSiren to None by default
                 "logo": None,
                 "adresse": None,
                 "zone_intervention": None,
@@ -61,6 +63,7 @@ async def get_or_create_agence(store_id: str, store_name: str, store_logo: Optio
         "storeId": store_id,
         "name": store_name,
         "lien": f"https://www.leboncoin.fr/boutique/{store_id}",
+        "CodeSiren": None,  # Set CodeSiren to None by default
         "logo": store_logo,
         "adresse": None,
         "zone_intervention": None,

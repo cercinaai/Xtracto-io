@@ -5,8 +5,8 @@ from src.database.database import get_source_db, get_destination_db
 from src.utils.b2_utils import upload_image_to_b2
 from urllib.parse import urlparse
 import asyncio
-import logging
 import aiohttp
+import logging
 
 # Configure logger
 logging.basicConfig(level=logging.INFO)
@@ -135,8 +135,7 @@ async def check_image_url(url: str) -> bool:
         try:
             async with session.head(url, timeout=5) as response:
                 return response.status == 200
-        except Exception as e:
-            logger.warning(f"Failed to check image URL {url}: {e}")
+        except Exception:
             return False
 
 async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
@@ -152,12 +151,21 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
     source_db = get_source_db()
     dest_db = get_destination_db()
     annonce_id = annonce["idSec"]
+    annonce_title = annonce.get("title")  # Get the title for duplicate checking
+
+    # Check for duplicates in realStateFinale based on idSec and title
+    dest_collection = dest_db["realStateFinale"]
+    existing = await dest_collection.find_one({"idSec": annonce_id, "title": annonce_title})
+    if existing:
+        logger.info(f"ℹ️ Annonce {annonce_id} ({annonce_title}) déjà présente dans realStateFinale, aucune action effectuée.")
+        return {"idSec": annonce_id, "images": annonce.get("images", []), "skipped": True}
+
     image_urls = annonce.get("images", [])
 
     # Update scraped_at timestamp
     annonce["scraped_at"] = datetime.utcnow()
 
-    # Process images if they exist and are not all "N/A"
+    # Process images sequentially if they exist and are not all "N/A"
     if image_urls and not all(url == "N/A" for url in image_urls):
         updated_image_urls = []
         for url in image_urls:
@@ -168,7 +176,6 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
 
             # Check if the image URL is accessible
             if not await check_image_url(url):
-                logger.warning(f"Image URL {url} is not accessible for annonce {annonce_id}, marking as N/A")
                 updated_image_urls.append("N/A")
                 continue
 
@@ -177,8 +184,7 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
                 file_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in urlparse(url).path.split('/')[-1] or "default.jpg")
                 uploaded_url = await upload_image_to_b2(url, file_name)
                 updated_image_urls.append(uploaded_url if uploaded_url != "N/A" else url)
-            except Exception as e:
-                logger.error(f"Failed to upload image {url} for annonce {annonce_id}: {e}")
+            except Exception:
                 updated_image_urls.append(url)  # Use original URL if upload fails
 
         # Update annonce with new image URLs
@@ -188,19 +194,10 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
         annonce["nbrImages"] = len(image_urls)
 
     # Transfer to realStateFinale
-    dest_collection = dest_db["realStateFinale"]
-    existing = await dest_collection.find_one({"idSec": annonce["idSec"]})
-    if existing:
-        update_data = {k: v for k, v in annonce.items() if k != "_id"}
-        await dest_collection.update_one(
-            {"idSec": annonce["idSec"]},
-            {"$set": update_data}
-        )
-    else:
-        annonce_to_transfer = annonce.copy()
-        if "_id" in annonce_to_transfer:
-            annonce_to_transfer["_id"] = annonce["_id"]
-        await dest_collection.insert_one(annonce_to_transfer)
+    annonce_to_transfer = annonce.copy()
+    if "_id" in annonce_to_transfer:
+        annonce_to_transfer["_id"] = annonce["_id"]
+    await dest_collection.insert_one(annonce_to_transfer)
 
     # Update realStateWithAgence with new image URLs
     await source_db["realStateWithAgence"].update_one(

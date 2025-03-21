@@ -5,14 +5,9 @@ import numpy as np
 from typing import Optional
 from b2sdk.v2 import InMemoryAccountInfo, B2Api
 from src.config.settings import B2_BUCKET_NAME, B2_ACCESS_KEY, B2_SECRET_KEY
-from loguru import logger
 
 # Global semaphore to limit concurrent uploads to Backblaze
 UPLOAD_SEMAPHORE = asyncio.Semaphore(3)  # Limit to 3 concurrent uploads
-
-# Suppress DEBUG logs unless there's an error
-logger.remove()  # Remove default handler
-logger.add(lambda msg: print(msg, end=""), level="INFO")  # Only INFO and above
 
 async def get_b2_api() -> B2Api:
     b2_api = B2Api(InMemoryAccountInfo())
@@ -110,7 +105,6 @@ async def upload_image_to_b2(image_url: str, filename: str, target: str = "real_
     initial_backoff = 2  # Start with a 2-second delay to avoid rate-limiting
 
     if not image_url.startswith('http'):
-        logger.warning(f"Invalid URL: {image_url}")
         return "N/A"
 
     async with UPLOAD_SEMAPHORE:  # Limit concurrent uploads
@@ -124,12 +118,10 @@ async def upload_image_to_b2(image_url: str, filename: str, target: str = "real_
                         timeout=10
                     ) as response:
                         if response.status == 404:
-                            logger.warning(f"Image not found (404) at {image_url}")
                             return "N/A"  # Skip retries for 404 errors
                         response.raise_for_status()
                         image_data = await response.read()
                         if not image_data:
-                            logger.warning(f"Empty content for image {image_url}")
                             return "N/A"
 
                 # Crop watermark from the image
@@ -141,27 +133,19 @@ async def upload_image_to_b2(image_url: str, filename: str, target: str = "real_
                 target_name = f"{target}/{filename}"
                 await asyncio.to_thread(bucket.upload_bytes, cropped_buffer, target_name, content_type='image/jpeg')
                 uploaded_url = f"https://f003.backblazeb2.com/file/{B2_BUCKET_NAME}/{target_name}"
-                logger.info(f"Successfully uploaded image {image_url} to {uploaded_url}")
                 return uploaded_url
 
             except aiohttp.ClientResponseError as e:
                 if e.status == 404:
-                    logger.warning(f"Image not found (404) at {image_url}")
                     return "N/A"  # Skip retries for 404 errors
                 if attempt < max_retries - 1:
-                    delay = initial_backoff * (2 ** attempt)
-                    logger.warning(f"Attempt {attempt + 1}/{max_retries} failed for {image_url}: {str(e)}. Retrying after {delay}s")
-                    await asyncio.sleep(delay)
+                    await asyncio.sleep(initial_backoff * (2 ** attempt))
                     continue
-                logger.error(f"Failed to upload {image_url} after {max_retries} attempts: {str(e)}")
                 return "N/A"
-            except Exception as e:
+            except Exception:
                 if attempt < max_retries - 1:
-                    delay = initial_backoff * (2 ** attempt)
-                    logger.warning(f"Attempt {attempt + 1}/{max_retries} failed for {image_url}: {str(e)}. Retrying after {delay}s")
-                    await asyncio.sleep(delay)
+                    await asyncio.sleep(initial_backoff * (2 ** attempt))
                     continue
-                logger.error(f"Failed to upload {image_url} after {max_retries} attempts: {str(e)}")
                 return "N/A"
 
         return "N/A"
