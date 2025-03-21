@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime
 import logging
 from src.database.database import init_db, get_source_db, get_destination_db
+from src.database.realState import transfer_from_withagence_to_finale
 
 logger = logging.getLogger(__name__)
 
@@ -65,20 +66,21 @@ async def process_and_transfer_images() -> None:
                 annonce_title = annonce.get("title", "Sans titre")
                 logger.info(f"🔍 Début du traitement de l'annonce {annonce_id} ({annonce_title}).")
 
-                # Simuler le traitement des images (à remplacer par votre logique réelle)
-                # Exemple : téléchargement, transformation, transfert
-                logger.debug(f"📸 Traitement des images: {annonce['images']}")
-                await asyncio.sleep(1)  # Simulation de traitement
-
-                # Marquer comme traité et transférer dans la base destination
-                await source_db["realStateWithAgence"].update_one(
-                    {"idSec": annonce_id},
-                    {"$set": {"processed": True, "processed_at": datetime.utcnow()}}
-                )
-                await dest_db["processed_listings"].insert_one(annonce)
-                logger.info(f"✅ Annonce {annonce_id} traitée et transférée.")
-            else:
-                logger.debug("ℹ️ Pas d'annonces avec images à traiter dans cette itération.")
+                # Transférer vers realStateFinale avec traitement des images
+                result = await transfer_from_withagence_to_finale(annonce)
+                if not result["skipped"]:
+                    # Marquer comme traité dans realStateWithAgence
+                    await source_db["realStateWithAgence"].update_one(
+                        {"idSec": annonce_id},
+                        {"$set": {"processed": True, "processed_at": datetime.utcnow()}}
+                    )
+                    logger.info(f"✅ Annonce {annonce_id} traitée et transférée vers realStateFinale.")
+                else:
+                    logger.info(f"ℹ️ Annonce {annonce_id} déjà dans realStateFinale, marquée comme traitée.")
+                    await source_db["realStateWithAgence"].update_one(
+                        {"idSec": annonce_id},
+                        {"$set": {"processed": True, "processed_at": datetime.utcnow()}}
+                    )
 
             await asyncio.sleep(1)  # Petite pause pour éviter une boucle trop rapide
 
