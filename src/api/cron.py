@@ -64,7 +64,8 @@ async def first_scraper_task():
             await asyncio.sleep(seconds_until_next)
 
 async def loop_scraper_task():
-    await asyncio.sleep(5 * 60)  # Attendre 5 minutes après le démarrage de firstScraper
+    logger.info("⏳ Attente de 5 minutes avant le démarrage de loopScraper...")
+    await asyncio.sleep(5 * 60)  # Attendre 5 minutes après le démarrage
     while True:
         if is_within_day_window():
             if not running_tasks["scrape_loop"]:
@@ -139,19 +140,26 @@ async def agence_notexisting_task():
             await asyncio.sleep(seconds_until_next)
 
 async def start_cron():
-    tasks = [
-        process_and_transfer_images(),
-        first_scraper_task(),
-        loop_scraper_task(),
-        agence_brute_scraper_task(),
-        agence_notexisting_task()
-    ]
+    # Lancer chaque tâche de manière indépendante avec create_task
+    asyncio.create_task(process_and_transfer_images())
     logger.info("📸 Lancement continu du traitement des images.")
+    
+    asyncio.create_task(first_scraper_task())
     logger.info("⏰ Planification de firstScraper pour 10h00-22h00.")
+    
+    asyncio.create_task(loop_scraper_task())
     logger.info("⏰ Planification de loopScraper pour 10h05-22h00.")
+    
+    asyncio.create_task(agence_brute_scraper_task())
     logger.info("⏰ Planification de agenceBrute_scraper pour 22h00-10h00.")
+    
+    asyncio.create_task(agence_notexisting_task())
     logger.info("⏰ Planification de agence_notexisting pour 22h00-10h00.")
-    await asyncio.gather(*tasks)  # Attendre toutes les tâches
+    
+    # Garder l'événement principal actif
+    while True:
+        await asyncio.sleep(60)  # Vérifier toutes les minutes que les tâches tournent
+        logger.debug("🟢 Vérification : cron est toujours actif.")
 
 if __name__ == "__main__":
     asyncio.run(start_cron())
