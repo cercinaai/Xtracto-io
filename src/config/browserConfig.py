@@ -13,7 +13,7 @@ from threading import Lock
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
+logger.add("logs/browser_config.log", rotation="1 day", retention="7 days", level="DEBUG")
 SHIFTER_PROXIES = [
     {"host": "hermes.p.shifter.io", "port": 10445},
     {"host": "hermes.p.shifter.io", "port": 10446},
@@ -33,8 +33,7 @@ async def setup_browser():
     kameleo_port = int(os.getenv("KAMELEO_PORT", "5001"))
     client = KameleoLocalApiClient(endpoint=f'http://{kameleo_host}:{kameleo_port}', retry_total=0)
 
-    # Wait until a profile slot is available
-    max_wait_time = 300  # Wait up to 5 minutes
+    max_wait_time = 300
     wait_start = time.time()
     while True:
         with profile_lock:
@@ -45,7 +44,7 @@ async def setup_browser():
         if time.time() - wait_start > max_wait_time:
             raise Exception("Délai d'attente dépassé pour obtenir un slot de profil Kameleo")
         logger.info("Attente d'un slot de profil Kameleo disponible...")
-        await asyncio.sleep(5)  # Wait 5 seconds before retrying
+        await asyncio.sleep(5)
 
     try:
         base_profiles = client.search_base_profiles(device_type='desktop', browser_product='chrome', language='en-us')
@@ -63,10 +62,7 @@ async def setup_browser():
             .for_base_profile(base_profiles[0].id)
             .set_name(f'profile_{random.randint(1000, 9999)}')
             .set_recommended_defaults()
-            .set_proxy('socks5', Server(
-                host=proxy_host,
-                port=proxy_port
-            ))
+            .set_proxy('socks5', Server(host=proxy_host, port=proxy_port))
             .set_webgl_meta('manual', WebglMetaSpoofingOptions(
                 vendor='Google Inc.',
                 renderer='ANGLE (Intel(R) HD Graphics 630 Direct3D11 vs_5_0 ps_5_0)'
@@ -81,7 +77,7 @@ async def setup_browser():
 
         client.start_profile_with_options(
             profile.id,
-            WebDriverSettings(arguments=["headless", "--disable-gpu", "--no-sandbox", "--disable-images", "--disable-media-session-api"])
+            WebDriverSettings(arguments=["headless", "--disable-gpu", "--no-sandbox", "--disable-images"])
         )
 
         playwright = await async_playwright().start()

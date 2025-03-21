@@ -1,4 +1,3 @@
-import logging
 import random
 import asyncio
 from multiprocessing import Process, Queue
@@ -10,11 +9,9 @@ from playwright.async_api import Page
 from src.scrapers.leboncoin.utils.human_behavorScrapperLbc import human_like_exploration, simulate_reading
 from loguru import logger
 
-logger = logging.getLogger(__name__)
 TARGET_API_URL = "https://api.leboncoin.fr/finder/search"
 
 async def check_and_solve_captcha(page: Page, action: str) -> bool:
-    """Vérifie et résout le CAPTCHA si présent avant une action."""
     captcha_selector = 'iframe[title="DataDome CAPTCHA"]'
     if await page.locator(captcha_selector).is_visible(timeout=3000):
         logger.warning(f"⚠️ CAPTCHA détecté avant {action}.")
@@ -24,12 +21,9 @@ async def check_and_solve_captcha(page: Page, action: str) -> bool:
         logger.info(f"✅ CAPTCHA résolu avant {action}.")
     return True
 
-def run_open_leboncoin(queue):
-    asyncio.run(open_leboncoin(queue))
-
 async def open_leboncoin(queue: Queue):
     logger.info("🚀 Démarrage du scraping...")
-    max_retries = 1
+    max_retries = 3  # Augmenté à 3
     browser = context = client = profile_id = playwright = None
 
     try:
@@ -81,18 +75,7 @@ async def open_leboncoin(queue: Queue):
 
             gimii_closed = await close_gimii_popup(page)
             if gimii_closed:
-                logger.info("🔄 Popup Gimii détectée et fermée, nouvelle tentative de chargement.")
-                await wait_for_page_load(page)
-
-            if await page.locator("#didomi-popup > div > div > div > span").is_visible(timeout=2000):
-                logger.error("⚠️ La pop-up des cookies n’a pas été fermée correctement.")
-                queue.put({"status": "error", "message": "Échec fermeture cookies"})
-                continue
-
-            logger.info("🔍 Seconde vérification de la popup Gimii avant navigation...")
-            gimii_closed_again = await close_gimii_popup(page)
-            if gimii_closed_again:
-                logger.info("🔄 Popup Gimii détectée une seconde fois et fermée.")
+                logger.info("🔄 Popup Gimii détectée et fermée.")
                 await wait_for_page_load(page)
 
             if not await check_and_solve_captcha(page, "navigation vers Locations"):
@@ -109,7 +92,6 @@ async def open_leboncoin(queue: Queue):
             await scrape_listings_via_api(page, api_responses, response_handler, initial_response)
             title = await page.title()
             logger.info(f"✅ Page ouverte - Titre : {title}")
-            await asyncio.sleep(random.uniform(30, 60))
             queue.put({"status": "success", "title": title})
             break
 
@@ -120,23 +102,8 @@ async def open_leboncoin(queue: Queue):
             else:
                 queue.put({"status": "error", "message": str(e)})
         finally:
-            if page:
-                try:
-                    page.remove_listener("response", on_response)
-                    logger.info("🎙️ Écouteur API principal supprimé.")
-                except Exception as e:
-                    logger.error(f"❌ Erreur lors de la suppression de l'écouteur principal : {e}")
+            if 'page' in locals():
+                page.remove_listener("response", on_response)
                 await page.close()
 
     await cleanup_browser(client, profile_id, playwright, browser)
-
-async def access_leboncoin():
-    queue = Queue()
-    process = Process(target=run_open_leboncoin, args=(queue,))
-    process.start()
-    process.join()
-    result = queue.get()
-    return {"status": "success", "message": "Scraping terminé", "data": result}
-
-if __name__ == "__main__":
-    asyncio.run(access_leboncoin())

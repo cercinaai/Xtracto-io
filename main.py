@@ -4,21 +4,20 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.api.apis import api_router
 from src.database.database import init_db, close_db
-from src.api.cron import start_cron  # Importer la fonction start_cron
+from src.api.cron import start_cron
 from loguru import logger
 import uvicorn
 from contextlib import asynccontextmanager
 import os
 import sys
 
-# Configuration des logs
 if not os.path.exists("logs/leboncoin"):
     os.makedirs("logs/leboncoin")
 if not os.path.exists("logs/capture/leboncoin"):
     os.makedirs("logs/capture/leboncoin")
 
-logger.remove()  # Supprime la configuration par défaut
-logger.add(sys.stdout, level="DEBUG")  # Affiche tout dans la console
+logger.remove()
+logger.add(sys.stdout, level="DEBUG")
 logger.add(
     "logs/leboncoin/leboncoin_{time:YYYY-MM-DD}.log",
     rotation="1 day",
@@ -35,7 +34,6 @@ async def lifespan(app: FastAPI):
     try:
         await init_db()
         logger.success("✅ Connexion aux bases de données établie avec succès")
-        # Lancer le processus de traitement des images en continu
         asyncio.create_task(start_cron())
         logger.info("🚀 Serveur démarré sur http://0.0.0.0:8002")
     except Exception as e:

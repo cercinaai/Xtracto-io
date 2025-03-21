@@ -4,22 +4,37 @@ from datetime import datetime, time
 from src.scrapers.leboncoin.image_processor import process_and_transfer_images
 from src.scrapers.leboncoin.firstScrapper import open_leboncoin
 from src.scrapers.leboncoin.leboncoinLoopScrapper import open_leboncoin_loop
+from src.scrapers.leboncoin.agenceBrute_scraper import scrape_agences
+from src.scrapers.leboncoin.agence_notexisting import scrape_annonce_agences
+from src.database.database import get_source_db
 from multiprocessing import Process, Queue
 from loguru import logger
+from src.api.apis import running_tasks
 
-# Define the time window for scraping (10:00 AM to 10:00 PM)
-SCRAPING_START_TIME = time(10, 0)  # 10:00 AM
-SCRAPING_END_TIME = time(22, 0)   # 10:00 PM
+DAY_START = time(10, 0)  # 10:00 AM
+DAY_END = time(22, 0)    # 10:00 PM
+NIGHT_START = time(22, 0)  # 10:00 PM
+NIGHT_END = time(10, 0)    # 10:00 AM
 
-def is_within_scraping_window() -> bool:
-    """Check if the current time is within the scraping window (10:00 AM to 10:00 PM)."""
+def is_within_day_window():
     now = datetime.now().time()
-    return SCRAPING_START_TIME <= now <= SCRAPING_END_TIME
+    return DAY_START <= now < DAY_END
+
+def is_within_night_window():
+    now = datetime.now().time()
+    return now >= NIGHT_START or now < NIGHT_END
+
+def run_async_in_process(func, queue):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(func(queue))
+    finally:
+        loop.close()
 
 async def run_scraper_in_process(func, task_name: str) -> dict:
-    """Run a scraper function in a separate process and return the result."""
     queue = Queue()
-    process = Process(target=func, args=(queue,))
+    process = Process(target=run_async_in_process, args=(func, queue))
     process.start()
     process.join()
     if not queue.empty():
@@ -27,93 +42,116 @@ async def run_scraper_in_process(func, task_name: str) -> dict:
     return {"status": "error", "message": f"{task_name} did not return a result"}
 
 async def first_scraper_task():
-    """Run the firstScraper (open_leboncoin) with retries and scheduling."""
     while True:
-        # Wait until 10:00 AM to start
-        now = datetime.now()
-        start_time_today = datetime.combine(now.date(), SCRAPING_START_TIME)
-        if now.time() < SCRAPING_START_TIME:
-            seconds_until_start = (start_time_today - now).total_seconds()
-            logger.info(f"⏳ Waiting until 10:00 AM to start firstScraper (in {seconds_until_start:.0f} seconds)...")
-            await asyncio.sleep(seconds_until_start)
-
-        # Run the scraper if within the time window
-        while is_within_scraping_window():
-            logger.info("🚀 Launching firstScraper (open_leboncoin)...")
-            max_retries = 3
-            for attempt in range(max_retries):
+        if is_within_day_window():
+            if not running_tasks["scrape_100_pages"]:
+                logger.info("🚀 Lancement de firstScraper...")
                 result = await run_scraper_in_process(open_leboncoin, "firstScraper")
                 if result["status"] == "success":
-                    logger.info("✅ firstScraper completed successfully.")
-                    break
+                    logger.info("✅ firstScraper terminé avec succès.")
                 else:
-                    logger.error(f"⚠️ firstScraper failed (attempt {attempt + 1}/{max_retries}): {result['message']}")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(5)  # Wait 5 seconds before retrying
-                    else:
-                        logger.error("❌ firstScraper failed after all retries. Will retry after 30 minutes.")
-
-            # Wait 30 minutes before the next run, but only if still within the time window
-            logger.info("⏳ Waiting 30 minutes before relaunching firstScraper...")
-            await asyncio.sleep(30 * 60)  # 30 minutes
-
-        # If outside the time window, wait until the next day at 10:00 AM
-        now = datetime.now()
-        next_day = now.replace(hour=SCRAPING_START_TIME.hour, minute=SCRAPING_START_TIME.minute, second=0, microsecond=0)
-        if now.time() >= SCRAPING_START_TIME:
-            next_day = next_day.replace(day=next_day.day + 1)
-        seconds_until_next = (next_day - now).total_seconds()
-        logger.info(f"⏳ Outside scraping window. Waiting until tomorrow 10:00 AM (in {seconds_until_next:.0f} seconds)...")
-        await asyncio.sleep(seconds_until_next)
+                    logger.error(f"⚠️ firstScraper échoué : {result['message']}")
+                wait_time = random.uniform(15 * 60, 20 * 60)  # 15-20 minutes
+                logger.info(f"⏳ Pause de {wait_time/60:.1f} minutes avant relance de firstScraper...")
+                await asyncio.sleep(wait_time)
+        else:
+            now = datetime.now()
+            next_start = datetime.combine(now.date(), DAY_START)
+            if now.time() >= DAY_START:
+                next_start = next_start.replace(day=next_start.day + 1)
+            seconds_until_next = (next_start - now).total_seconds()
+            logger.info(f"⏳ Hors fenêtre jour. Attente jusqu'à 10h00 ({seconds_until_next:.0f} secondes)...")
+            await asyncio.sleep(seconds_until_next)
 
 async def loop_scraper_task():
-    """Run the loopScraper (open_leboncoin_loop) between 10:00 AM and 10:00 PM with a 2-5 minute delay between runs."""
-    # Wait 5 minutes after 10:00 AM to start (i.e., start at 10:05 AM)
-    now = datetime.now()
-    start_time_today = datetime.combine(now.date(), SCRAPING_START_TIME)
-    first_run_time = start_time_today.replace(minute=5)  # 10:05 AM
-    if now < first_run_time:
-        seconds_until_start = (first_run_time - now).total_seconds()
-        logger.info(f"⏳ Waiting until 10:05 AM to start loopScraper (in {seconds_until_start:.0f} seconds)...")
-        await asyncio.sleep(seconds_until_start)
-
+    await asyncio.sleep(5 * 60)  # Attendre 5 minutes après le démarrage de firstScraper
     while True:
-        # Run the scraper if within the time window
-        while is_within_scraping_window():
-            logger.info("🔄 Launching loopScraper (open_leboncoin_loop)...")
-            result = await run_scraper_in_process(open_leboncoin_loop, "loopScraper")
-            if result["status"] == "success":
-                logger.info("✅ loopScraper completed successfully.")
+        if is_within_day_window():
+            if not running_tasks["scrape_loop"]:
+                logger.info("🔄 Lancement de loopScraper...")
+                result = await run_scraper_in_process(open_leboncoin_loop, "loopScraper")
+                if result["status"] == "success":
+                    logger.info("✅ loopScraper terminé avec succès.")
+                else:
+                    logger.error(f"⚠️ loopScraper échoué : {result['message']}")
+                wait_time = random.uniform(2 * 60, 5 * 60)  # 2-5 minutes
+                logger.info(f"⏳ Pause de {wait_time/60:.1f} minutes avant relance de loopScraper...")
+                await asyncio.sleep(wait_time)
+        else:
+            now = datetime.now()
+            next_start = datetime.combine(now.date(), DAY_START)
+            if now.time() >= DAY_START:
+                next_start = next_start.replace(day=next_start.day + 1)
+            seconds_until_next = (next_start - now).total_seconds()
+            logger.info(f"⏳ Hors fenêtre jour. Attente jusqu'à 10h00 ({seconds_until_next:.0f} secondes)...")
+            await asyncio.sleep(seconds_until_next)
+
+async def agence_brute_scraper_task():
+    source_db = get_source_db()
+    agences_brute_collection = source_db["agencesBrute"]
+    while True:
+        if is_within_night_window():
+            remaining = await agences_brute_collection.count_documents({"scraped": {"$ne": True}})
+            if remaining > 0 and not running_tasks["scrape_agence_brute"]:
+                logger.info("🔍 Lancement de agenceBrute_scraper...")
+                result = await run_scraper_in_process(scrape_agences, "agenceBrute_scraper")
+                if result["status"] == "success":
+                    logger.info("✅ agenceBrute_scraper terminé avec succès.")
+                else:
+                    logger.error(f"⚠️ agenceBrute_scraper échoué : {result['message']}")
+                await asyncio.sleep(5 * 60)  # 5 minutes
             else:
-                logger.error(f"⚠️ loopScraper failed: {result['message']}")
+                logger.info("ℹ️ Aucune agence brute restante ou tâche en cours.")
+                await asyncio.sleep(60)  # Vérifier toutes les minutes
+        else:
+            now = datetime.now()
+            next_start = datetime.combine(now.date(), NIGHT_START)
+            if now.time() >= NIGHT_START or now.time() < NIGHT_END:
+                next_start = next_start.replace(day=next_start.day + 1)
+            seconds_until_next = (next_start - now).total_seconds()
+            logger.info(f"⏳ Hors fenêtre nuit. Attente jusqu'à 22h00 ({seconds_until_next:.0f} secondes)...")
+            await asyncio.sleep(seconds_until_next)
 
-            # Wait 2-5 minutes before the next run
-            wait_time = random.uniform(2 * 60, 5 * 60)  # Random delay between 2 and 5 minutes
-            logger.info(f"⏳ Waiting {wait_time/60:.1f} minutes before relaunching loopScraper...")
-            await asyncio.sleep(wait_time)
-
-        # If outside the time window, wait until the next day at 10:05 AM
-        now = datetime.now()
-        next_day = now.replace(hour=SCRAPING_START_TIME.hour, minute=5, second=0, microsecond=0)
-        if now.time() >= SCRAPING_START_TIME:
-            next_day = next_day.replace(day=next_day.day + 1)
-        seconds_until_next = (next_day - now).total_seconds()
-        logger.info(f"⏳ Outside scraping window. Waiting until tomorrow 10:05 AM (in {seconds_until_next:.0f} seconds)...")
-        await asyncio.sleep(seconds_until_next)
+async def agence_notexisting_task():
+    source_db = get_source_db()
+    realstate_collection = source_db["realState"]
+    while True:
+        if is_within_night_window():
+            remaining = await realstate_collection.count_documents({"idAgence": {"$exists": False}})
+            if remaining > 0 and not running_tasks["scrape_agence_notexisting"]:
+                logger.info("🔍 Lancement de agence_notexisting...")
+                result = await run_scraper_in_process(scrape_annonce_agences, "agence_notexisting")
+                if result["status"] == "success":
+                    logger.info("✅ agence_notexisting terminé avec succès.")
+                else:
+                    logger.error(f"⚠️ agence_notexisting échoué : {result['message']}")
+                await asyncio.sleep(5 * 60)  # 5 minutes
+            else:
+                logger.info("ℹ️ Aucune annonce sans agence restante ou tâche en cours.")
+                await asyncio.sleep(60)  # Vérifier toutes les minutes
+        else:
+            now = datetime.now()
+            next_start = datetime.combine(now.date(), NIGHT_START)
+            if now.time() >= NIGHT_START or now.time() < NIGHT_END:
+                next_start = next_start.replace(day=next_start.day + 1)
+            seconds_until_next = (next_start - now).total_seconds()
+            logger.info(f"⏳ Hors fenêtre nuit. Attente jusqu'à 22h00 ({seconds_until_next:.0f} secondes)...")
+            await asyncio.sleep(seconds_until_next)
 
 async def start_cron():
-    """Start the cron jobs for image processing, firstScraper, and loopScraper."""
-    # Start the image processing task (runs continuously)
-    asyncio.create_task(process_and_transfer_images())
-    logger.info("📸 Started continuous image processing task.")
-
-    # Start the firstScraper task (runs at 10:00 AM, relaunches every 30 minutes)
-    asyncio.create_task(first_scraper_task())
-    logger.info("⏰ Scheduled firstScraper to start at 10:00 AM.")
-
-    # Start the loopScraper task (runs at 10:05 AM, loops every 2-5 minutes until 10:00 PM)
-    asyncio.create_task(loop_scraper_task())
-    logger.info("⏰ Scheduled loopScraper to start at 10:05 AM and run until 10:00 PM.")
+    tasks = [
+        process_and_transfer_images(),
+        first_scraper_task(),
+        loop_scraper_task(),
+        agence_brute_scraper_task(),
+        agence_notexisting_task()
+    ]
+    logger.info("📸 Lancement continu du traitement des images.")
+    logger.info("⏰ Planification de firstScraper pour 10h00-22h00.")
+    logger.info("⏰ Planification de loopScraper pour 10h05-22h00.")
+    logger.info("⏰ Planification de agenceBrute_scraper pour 22h00-10h00.")
+    logger.info("⏰ Planification de agence_notexisting pour 22h00-10h00.")
+    await asyncio.gather(*tasks)  # Attendre toutes les tâches
 
 if __name__ == "__main__":
     asyncio.run(start_cron())
