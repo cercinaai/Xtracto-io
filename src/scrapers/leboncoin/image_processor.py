@@ -12,6 +12,7 @@ async def process_and_transfer_images() -> None:
     """
     Continuously monitor realStateWithAgence for new or updated annonces, process their images,
     and transfer them to realStateFinale, avoiding duplicates based on idSec and title.
+    Annonces with no images (images: []) are skipped and marked as processed.
     """
     await init_db()
     source_db = get_source_db()
@@ -19,7 +20,23 @@ async def process_and_transfer_images() -> None:
 
     while True:
         try:
-            # Query for unprocessed annonces in realStateWithAgence
+            # First, handle annonces with images: [] by marking them as processed
+            zero_images_query = {
+                "idAgence": {"$exists": True},
+                "images": [],
+                "processed": {"$ne": True}
+            }
+            zero_images_annonces = await source_db["realStateWithAgence"].find(zero_images_query).to_list(length=None)
+            for annonce in zero_images_annonces:
+                annonce_id = annonce["idSec"]
+                annonce_title = annonce.get("title")
+                logger.info(f"ℹ️ Annonce {annonce_id} ({annonce_title}) has no images (images: []), skipping transfer and marking as processed.")
+                await source_db["realStateWithAgence"].update_one(
+                    {"idSec": annonce_id},
+                    {"$set": {"processed": True, "processed_at": datetime.utcnow()}}
+                )
+
+            # Query for unprocessed annonces with non-empty images
             query = {
                 "idAgence": {"$exists": True},
                 "images": {"$exists": True, "$ne": []},

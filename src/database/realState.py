@@ -6,11 +6,7 @@ from src.utils.b2_utils import upload_image_to_b2
 from urllib.parse import urlparse
 import asyncio
 import aiohttp
-import logging
-
-# Configure logger
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 class RealState(BaseModel):
     idSec: str
