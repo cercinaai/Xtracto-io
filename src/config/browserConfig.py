@@ -13,7 +13,6 @@ from threading import Lock
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-logger.add("logs/browser_config.log", rotation="1 day", retention="7 days", level="DEBUG")
 SHIFTER_PROXIES = [
     {"host": "hermes.p.shifter.io", "port": 10445},
     {"host": "hermes.p.shifter.io", "port": 10446},
