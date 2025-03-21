@@ -5,10 +5,10 @@ from typing import Optional
 from fastapi import BackgroundTasks
 
 from src.database.database import init_db
-from src.scrapers.leboncoin.firstScrapper import firstScraper
-from src.scrapers.leboncoin.leboncoinLoopScrapper import loopScraper
-from src.scrapers.leboncoin.agenceBrute_scraper import agenceBrute_scraper
-from src.scrapers.leboncoin.agence_notexisting import agence_notexisting
+from src.scrapers.leboncoin.firstScrapper import open_leboncoin
+from src.scrapers.leboncoin.leboncoinLoopScrapper import open_leboncoin_loop
+from src.scrapers.leboncoin.agenceBrute_scraper import scrape_agences
+from src.scrapers.leboncoin.agence_notexisting import scrape_annonce_agences
 from src.scrapers.leboncoin.image_processor import process_and_transfer_images
 import logging
 
