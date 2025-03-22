@@ -8,7 +8,7 @@ from src.scrapers.leboncoin.utils.human_behavorScrapperLbc import (
     human_like_delay_search,
     human_like_scroll_to_element_search
 )
-from playwright.async_api import Page, TimeoutError
+from playwright.async_api import Page
 from loguru import logger
 
 async def scrape_agence_details(page: Page, store_id: str, lien: str) -> dict:
@@ -134,90 +134,106 @@ async def scrape_agence_details(page: Page, store_id: str, lien: str) -> dict:
     return update_data
 
 async def scrape_agences(queue):
-    """Scrape les agences de la collection agencesBrute et les transfère vers agencesFinale."""
+    """Scrape les agences de la collection agencesBrute qui ne sont pas dans agencesFinale."""
     logger.info("🚀 Démarrage du scraping des agences dans agencesBrute...")
     source_db = get_source_db()
     dest_db = get_destination_db()
     agences_brute_collection = source_db["agencesBrute"]
     agences_finale_collection = dest_db["agencesFinale"]
 
-    agences = await agences_brute_collection.find({"scraped": {"$ne": True}}).to_list(length=None)
-    total_agences = len(agences)
-    logger.info(f"📊 Nombre total d'agences à scraper : {total_agences}")
+    while True:  # Boucle externe pour relancer en cas d'échec CAPTCHA
+        # Récupérer les agences non scrapées et absentes de agencesFinale
+        finale_ids = await agences_finale_collection.distinct("idAgence")
+        agences = await agences_brute_collection.find({
+            "scraped": {"$ne": True},
+            "$or": [
+                {"idAgence": {"$nin": finale_ids}},
+                {"storeId": {"$nin": finale_ids}}
+            ]
+        }).to_list(length=None)
+        total_agences = len(agences)
+        logger.info(f"📊 Nombre total d'agences à scraper : {total_agences}")
 
-    if total_agences == 0:
-        logger.info("ℹ️ Aucune agence à scraper dans agencesBrute.")
-        await queue.put({"status": "success", "data": {"updated": [], "total": 0, "remaining": 0}})
-        return
+        if total_agences == 0:
+            logger.info("ℹ️ Aucune agence à scraper dans agencesBrute ou toutes sont déjà dans agencesFinale.")
+            await queue.put({"status": "success", "data": {"updated": [], "total": 0, "remaining": 0}})
+            break
 
-    updated_agences = []
-    remaining_agences = total_agences
+        updated_agences = []
+        remaining_agences = total_agences
+        browser = context = client = profile_id = playwright = None
 
-    browser = context = client = profile_id = playwright = None
-    try:
-        browser, context, client, profile_id, playwright = await setup_browser()
-        page = await context.new_page()
-        await page.goto("https://www.leboncoin.fr/", timeout=60000)  # Navigation initiale
-        await human_like_delay_search(1, 3)
+        try:
+            browser, context, client, profile_id, playwright = await setup_browser()
+            page = await context.new_page()
+            await page.goto("https://www.leboncoin.fr/", timeout=60000)  # Navigation initiale
+            await human_like_delay_search(1, 3)
 
-        if await page.locator('iframe[title="DataDome CAPTCHA"]').is_visible(timeout=5000):
-            if not await solve_audio_captcha(page):
-                logger.error("❌ Échec de la résolution du CAPTCHA initial")
-                await queue.put({"status": "error", "message": "Échec CAPTCHA initial"})
-                return
-            await human_like_delay_search(2, 5)
+            if await page.locator('iframe[title="DataDome CAPTCHA"]').is_visible(timeout=5000):
+                if not await solve_audio_captcha(page):
+                    logger.error("❌ Échec de la résolution du CAPTCHA initial, fermeture du navigateur...")
+                    await cleanup_browser(client, profile_id, playwright, browser)
+                    await asyncio.sleep(10)  # Attente avant nouvelle tentative
+                    continue
+                await human_like_delay_search(2, 5)
 
-        cookie_button = page.locator("button", has_text="Accepter")
-        if await cookie_button.is_visible(timeout=5000):
-            await human_like_click_search(page, cookie_button, move_cursor=True, click_delay=0.2)
-            await human_like_delay_search(0.2, 0.5)
+            cookie_button = page.locator("button", has_text="Accepter")
+            if await cookie_button.is_visible(timeout=5000):
+                await human_like_click_search(page, cookie_button, move_cursor=True, click_delay=0.2)
+                await human_like_delay_search(0.2, 0.5)
 
-        for index, agence in enumerate(agences, 1):
-            store_id = agence.get("idAgence") or agence.get("storeId")
-            if not store_id:
-                logger.error(f"❌ Aucune clé 'idAgence' ou 'storeId' trouvée pour l'agence {agence.get('_id')}")
+            for index, agence in enumerate(agences, 1):
+                store_id = agence.get("idAgence") or agence.get("storeId")
+                if not store_id:
+                    logger.error(f"❌ Aucune clé 'idAgence' ou 'storeId' trouvée pour l'agence {agence.get('_id')}")
+                    remaining_agences -= 1
+                    continue
+
+                lien = agence.get("lien")
+                logger.info(f"🔍 Scraping de l’agence {store_id} ({index}/{total_agences}) : {lien}")
+
+                agence_page = await context.new_page()
+                try:
+                    await agence_page.goto(lien, timeout=90000)
+                    await human_like_delay_search(1, 3)
+
+                    if await agence_page.locator('iframe[title="DataDome CAPTCHA"]').is_visible(timeout=5000):
+                        if not await solve_audio_captcha(agence_page):
+                            logger.error(f"❌ Échec de la résolution du CAPTCHA pour l’agence {store_id}, fermeture du navigateur...")
+                            await agence_page.close()
+                            await cleanup_browser(client, profile_id, playwright, browser)
+                            await asyncio.sleep(10)  # Attente avant nouvelle tentative
+                            raise Exception("CAPTCHA failure, restarting session")  # Forcer la boucle externe
+                        await human_like_delay_search(2, 5)
+
+                    update_data = await scrape_agence_details(agence_page, store_id, lien)
+                    await agences_brute_collection.update_one(
+                        {"_id": agence["_id"]},
+                        {"$set": {**update_data, "idAgence": store_id}, "$unset": {"storeId": ""}}
+                    )
+                    agence_data = await agences_brute_collection.find_one({"idAgence": store_id})
+                    await agences_finale_collection.update_one(
+                        {"idAgence": store_id},
+                        {"$set": agence_data},
+                        upsert=True
+                    )
+                    updated_agences.append({"idAgence": store_id, "name": agence.get("name"), **update_data})
+                    logger.info(f"✅ Agence {store_id} scrapée et transférée")
+                except Exception as e:
+                    if "CAPTCHA failure" in str(e):
+                        raise  # Relancer la boucle externe
+                    logger.error(f"⚠️ Erreur lors du scraping de l’agence {store_id} : {e}")
+                finally:
+                    await agence_page.close()
                 remaining_agences -= 1
-                continue
 
-            lien = agence.get("lien")
-            logger.info(f"🔍 Scraping de l’agence {store_id} ({index}/{total_agences}) : {lien}")
+            logger.info(f"🏁 Scraping terminé - Total agences traitées : {total_agences}, mises à jour : {len(updated_agences)}")
+            await queue.put({"status": "success", "data": {"updated": updated_agences, "total": total_agences, "remaining": remaining_agences}})
+            break  # Sortir de la boucle si tout est traité avec succès
 
-            agence_page = await context.new_page()
-            try:
-                await agence_page.goto(lien, timeout=90000)
-                await human_like_delay_search(1, 3)
-
-                if await agence_page.locator('iframe[title="DataDome CAPTCHA"]').is_visible(timeout=5000):
-                    if not await solve_audio_captcha(agence_page):
-                        logger.error(f"❌ Échec de la résolution du CAPTCHA pour l’agence {store_id}")
-                        remaining_agences -= 1
-                        continue
-                    await human_like_delay_search(2, 5)
-
-                update_data = await scrape_agence_details(agence_page, store_id, lien)
-                await agences_brute_collection.update_one(
-                    {"_id": agence["_id"]},
-                    {"$set": {**update_data, "idAgence": store_id}, "$unset": {"storeId": ""}}
-                )
-                agence_data = await agences_brute_collection.find_one({"idAgence": store_id})
-                await agences_finale_collection.update_one(
-                    {"idAgence": store_id},
-                    {"$set": agence_data},
-                    upsert=True
-                )
-                updated_agences.append({"idAgence": store_id, "name": agence.get("name"), **update_data})
-                logger.info(f"✅ Agence {store_id} scrapée et transférée")
-            except Exception as e:
-                logger.error(f"⚠️ Erreur lors du scraping de l’agence {store_id} : {e}")
-            finally:
-                await agence_page.close()
-            remaining_agences -= 1
-
-    except Exception as e:
-        logger.error(f"⚠️ Erreur générale : {e}")
-        await queue.put({"status": "error", "message": str(e)})
-    finally:
-        await cleanup_browser(client, profile_id, playwright, browser)
-
-    logger.info(f"🏁 Scraping terminé - Total agences traitées : {total_agences}, mises à jour : {len(updated_agences)}")
-    await queue.put({"status": "success", "data": {"updated": updated_agences, "total": total_agences, "remaining": remaining_agences}})
+        except Exception as e:
+            logger.error(f"⚠️ Erreur dans la session : {e}")
+            if browser:  # Nettoyer uniquement si le navigateur est encore actif
+                await cleanup_browser(client, profile_id, playwright, browser)
+            await asyncio.sleep(10)  # Attente avant de relancer
+            continue  # Relancer la boucle externe
