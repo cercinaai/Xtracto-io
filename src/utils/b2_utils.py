@@ -10,7 +10,7 @@ import numpy as np
 from typing import Optional
 from b2sdk.v2 import InMemoryAccountInfo, B2Api
 from b2sdk.v2.exception import B2Error
-from src.config.settings import B2_BUCKET_NAME, B2_ACCESS_KEY, B2_SECRET_KEY  # Assurez-vous d'avoir ces variables dans settings
+from src.config.settings import B2_BUCKET_NAME, B2_ACCESS_KEY, B2_SECRET_KEY
 from loguru import logger
 from concurrent.futures import ThreadPoolExecutor
 
@@ -19,7 +19,7 @@ import logging
 logging.getLogger('b2sdk').setLevel(logging.ERROR)
 
 # Semaphore pour limiter les uploads concurrents
-UPLOAD_SEMAPHORE = asyncio.Semaphore(5)  # Jusqu'à 5 uploads simultanés pour plus de rapidité
+UPLOAD_SEMAPHORE = asyncio.Semaphore(5)
 
 # Pool de threads pour les opérations OpenCV
 EXECUTOR = ThreadPoolExecutor(max_workers=10)
@@ -36,8 +36,8 @@ async def get_b2_api() -> B2Api:
                 await asyncio.sleep(0.5 * (2 ** attempt))
                 continue
             logger.error(f"Échec définitif de l'authentification B2 après 3 tentatives : {e}")
-            raise
-    raise Exception("Impossible d'initialiser l'API B2")
+            return None
+    return None
 
 def detect_watermark_in_corner(gray_image: np.ndarray, corner: str, threshold_range: tuple = (100, 250), 
                               min_area: int = 20, max_area: int = 3000) -> Optional[tuple]:
@@ -47,7 +47,7 @@ def detect_watermark_in_corner(gray_image: np.ndarray, corner: str, threshold_ra
 
     blurred = cv2.GaussianBlur(gray_image, (3, 3), 0)
     best_contours = []
-    for threshold in range(threshold_range[0], threshold_range[1] + 1, 10):  # Pas de 10 pour plus de rapidité
+    for threshold in range(threshold_range[0], threshold_range[1] + 1, 10):
         _, binary = cv2.threshold(blurred, threshold, 255, cv2.THRESH_BINARY_INV)
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for contour in contours:
@@ -81,17 +81,19 @@ def detect_watermark_in_corner(gray_image: np.ndarray, corner: str, threshold_ra
     return None
 
 async def crop_watermark_from_image(image_buffer: bytes) -> bytes:
-    """Recadre une image pour supprimer les filigranes en haut ou en bas, coupe minimum 20px si rien détecté."""
-    try:
-        if not image_buffer or len(image_buffer) == 0:
-            raise ValueError("Buffer d'image vide ou invalide")
+    """Recadre une image pour supprimer les filigranes en haut ou en bas, retourne None si échec."""
+    if not image_buffer or len(image_buffer) == 0:
+        logger.debug("Buffer d'image vide ou invalide")
+        return None
 
+    try:
         # Décoder l'image dans un thread
         original_image = await asyncio.to_thread(
             cv2.imdecode, np.frombuffer(image_buffer, np.uint8), cv2.IMREAD_COLOR
         )
         if original_image is None or original_image.size == 0:
-            raise ValueError("Impossible de charger l'image")
+            logger.debug("Impossible de charger l'image")
+            return None
 
         height, width = original_image.shape[:2]
         gray_image = await asyncio.to_thread(cv2.cvtColor, original_image, cv2.COLOR_BGR2GRAY)
@@ -111,61 +113,62 @@ async def crop_watermark_from_image(image_buffer: bytes) -> bytes:
                 break
 
         # Calcul des zones à couper
-        top_cut = max(top_detection[3], 20) if top_detection else 20  # Minimum 20px
-        bottom_cut = max(bottom_detection[3], 20) if bottom_detection else 20  # Minimum 20px
-        new_top = min(top_cut, height // 2)  # Limite à la moitié de l'image
+        top_cut = max(top_detection[3], 20) if top_detection else 20
+        bottom_cut = max(bottom_detection[3], 20) if bottom_detection else 20
+        new_top = min(top_cut, height // 2)
         new_bottom = height - min(bottom_cut, height // 2)
 
         if new_top >= new_bottom:
-            cropped = original_image  # Si coupe invalide, garder l'original
+            cropped = original_image
         else:
             cropped = original_image[new_top:new_bottom, :]
 
         # Encoder dans un thread
         _, cropped_buffer = await asyncio.to_thread(cv2.imencode, '.jpg', cropped)
         if cropped_buffer is None or len(cropped_buffer) == 0:
-            raise ValueError("Échec de l'encodage JPEG")
+            logger.debug("Échec de l'encodage JPEG")
+            return None
         return cropped_buffer.tobytes()
 
     except Exception as e:
-        logger.error(f"Erreur lors du recadrage : {e}")
-        raise
+        logger.debug(f"Erreur non bloquante lors du recadrage : {e}")
+        return None
 
 async def upload_image_to_b2(image_url: str, filename: str, target: str = "real_estate") -> str:
     """Télécharge, recadre et uploade une image sur B2, retourne 'N/A' si échec."""
     async with UPLOAD_SEMAPHORE:
-        for attempt in range(3):
-            try:
-                if not image_url.startswith('http'):
-                    return "N/A"
-
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        image_url,
-                        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-                        timeout=aiohttp.ClientTimeout(total=10)
-                    ) as response:
-                        if response.status == 404:
-                            return "N/A"
-                        response.raise_for_status()
-                        image_data = await response.read()
-                        if not image_data:
-                            return "N/A"
-
-                cropped_buffer = await crop_watermark_from_image(image_data)
-                
-                b2_api = await get_b2_api()
-                bucket = await asyncio.to_thread(b2_api.get_bucket_by_name, B2_BUCKET_NAME)
-                target_name = f"{target}/{filename}"
-                await asyncio.to_thread(bucket.upload_bytes, cropped_buffer, target_name, content_type='image/jpeg')
-                return f"https://f003.backblazeb2.com/file/{B2_BUCKET_NAME}/{target_name}"
-
-            except Exception as e:
-                if attempt < 2:
-                    await asyncio.sleep(0.5 * (2 ** attempt))
-                    continue
-                logger.warning(f"Échec upload image {image_url} après 3 tentatives : {e}")
+        try:
+            if not image_url.startswith('http'):
                 return "N/A"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    image_url,
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                    timeout=aiohttp.ClientTimeout(total=5)  # Réduit à 5s pour accélérer
+                ) as response:
+                    if response.status == 404:
+                        return "N/A"
+                    response.raise_for_status()
+                    image_data = await response.read()
+                    if not image_data:
+                        return "N/A"
+
+            cropped_buffer = await crop_watermark_from_image(image_data)
+            if cropped_buffer is None:
+                return "N/A"
+
+            b2_api = await get_b2_api()
+            if b2_api is None:
+                return "N/A"
+            bucket = await asyncio.to_thread(b2_api.get_bucket_by_name, B2_BUCKET_NAME)
+            target_name = f"{target}/{filename}"
+            await asyncio.to_thread(bucket.upload_bytes, cropped_buffer, target_name, content_type='image/jpeg')
+            return f"https://f003.backblazeb2.com/file/{B2_BUCKET_NAME}/{target_name}"
+
+        except Exception as e:
+            logger.debug(f"Échec non bloquant upload image {image_url} : {e}")
+            return "N/A"
 
 def sanitize_filename(filename: str) -> str:
     """Nettoie le nom du fichier."""
