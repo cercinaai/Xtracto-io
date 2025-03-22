@@ -25,10 +25,10 @@ async def process_and_transfer_images() -> None:
             # Récupérer les idSec déjà présents dans realStateFinale
             finale_ids = await dest_db["realStateFinale"].distinct("idSec")
 
-            # Traitement des annonces sans images (marquer comme traitées uniquement, pas de transfert)
+            # Traitement des annonces sans images (marquer comme traitées, pas de transfert)
             zero_images_query = {
                 "idAgence": {"$exists": True},
-                "images": [],
+                "images": {"$in": [[], None]},  # Images vides ou absentes
                 "processed": {"$ne": True}
             }
             zero_images_count = await source_db["realStateWithAgence"].count_documents(zero_images_query)
@@ -47,47 +47,35 @@ async def process_and_transfer_images() -> None:
             # Traitement des annonces avec images non présentes dans realStateFinale
             query = {
                 "idAgence": {"$exists": True},
-                "images": {"$exists": True, "$ne": [], "$gte": 1},  # Au moins 1 image
+                "images": {"$exists": True, "$ne": [], "$nin": [[], ["N/A"]]},  # Au moins une image valide
                 "processed": {"$ne": True},
                 "idSec": {"$nin": finale_ids}  # Exclure celles déjà dans realStateFinale
             }
             remaining_count = await source_db["realStateWithAgence"].count_documents(query)
-            logger.info(f"ℹ️ {remaining_count} annonces avec 1 ou plus d'images à traiter et transférer.")
+            logger.info(f"ℹ️ {remaining_count} annonces avec images valides à traiter et transférer.")
 
             if remaining_count == 0:
-                if zero_images_count == 0:
-                    logger.debug("⏳ Aucune annonce à traiter ou transférer, attente de 10 secondes.")
-                    await asyncio.sleep(10)
-                else:
-                    logger.debug("ℹ️ Annonces sans images marquées, mais aucune avec images à transférer.")
-                    await asyncio.sleep(1)
-                continue
-
-            # Traiter la première annonce avec images non traitée et non présente dans realStateFinale
-            annonce = await source_db["realStateWithAgence"].find_one(query, sort=[("scraped_at", 1)])
-            if not annonce:
-                logger.warning("⚠️ Aucune annonce trouvée malgré le count > 0, possible incohérence.")
+                logger.debug("⏳ Aucune annonce avec images valides à traiter, attente de 10 secondes.")
                 await asyncio.sleep(10)
                 continue
 
-            annonce_id = annonce["idSec"]
-            annonce_title = annonce.get("title", "Sans titre")
-            logger.info(f"🔍 Début du traitement de l'annonce {annonce_id} ({annonce_title}).")
+            # Traiter toutes les annonces correspondantes dans cette itération
+            annonces = await source_db["realStateWithAgence"].find(query).to_list(length=None)
+            for annonce in annonces:
+                annonce_id = annonce["idSec"]
+                annonce_title = annonce.get("title", "Sans titre")
+                logger.info(f"🔍 Début du traitement de l'annonce {annonce_id} ({annonce_title}).")
 
-            # Transférer vers realStateFinale avec traitement des images
-            result = await transfer_from_withagence_to_finale(annonce)
-            if not result["skipped"]:
-                logger.info(f"✅ Annonce {annonce_id} traitée et transférée vers realStateFinale.")
-            else:
-                logger.info(f"ℹ️ Annonce {annonce_id} déjà dans realStateFinale (vérification interne), marquée comme traitée.")
+                # Transférer vers realStateFinale avec traitement des images
+                result = await transfer_from_withagence_to_finale(annonce)
+                if not result["skipped"]:
+                    logger.info(f"✅ Annonce {annonce_id} traitée et transférée vers realStateFinale.")
+                    # Supprimer de realStateWithAgence après transfert réussi
+                    await source_db["realStateWithAgence"].delete_one({"idSec": annonce_id})
+                else:
+                    logger.info(f"ℹ️ Annonce {annonce_id} non transférée (doublon ou échec images), reste dans realStateWithAgence.")
 
-            # Marquer comme traité dans realStateWithAgence
-            await source_db["realStateWithAgence"].update_one(
-                {"idSec": annonce_id},
-                {"$set": {"processed": True, "processed_at": datetime.utcnow()}}
-            )
-
-            await asyncio.sleep(1)  # Petite pause pour éviter une boucle trop rapide
+            await asyncio.sleep(1)  # Pause entre itérations
 
         except Exception as e:
             logger.error(f"⚠️ Erreur dans la boucle de traitement: {e}")
