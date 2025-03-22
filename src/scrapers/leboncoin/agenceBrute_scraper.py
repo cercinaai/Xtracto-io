@@ -151,14 +151,20 @@ async def scrape_agences(queue):
 
     if total_agences == 0:
         logger.info("ℹ️ Aucune agence à scraper dans agencesBrute.")
-        queue.put({"status": "success", "data": {"updated": [], "total": 0, "remaining": 0}})
+        await queue.put({"status": "success", "data": {"updated": [], "total": 0, "remaining": 0}})
         return
 
     updated_agences = []
     remaining_agences = total_agences
 
     for index, agence in enumerate(agences, 1):
-        store_id = agence["idAgence"]
+        # Gérer les deux clés possibles : "idAgence" ou "storeId"
+        store_id = agence.get("idAgence") or agence.get("storeId")
+        if not store_id:
+            logger.error(f"❌ Aucune clé 'idAgence' ou 'storeId' trouvée pour l'agence {agence.get('_id')}")
+            remaining_agences -= 1
+            continue
+
         lien = agence.get("lien")
         logger.info(f"🔍 Scraping de l’agence {store_id} ({index}/{total_agences}) : {lien}")
 
@@ -177,9 +183,17 @@ async def scrape_agences(queue):
                 await human_like_delay_search(2, 5)
 
             update_data = await scrape_agence_details(page, store_id, lien)
-            await agences_brute_collection.update_one({"idAgence": store_id}, {"$set": update_data})
+            # Harmoniser la clé dans agencesBrute
+            await agences_brute_collection.update_one(
+                {"_id": agence["_id"]},
+                {"$set": {**update_data, "idAgence": store_id}, "$unset": {"storeId": ""}}
+            )
             agence_data = await agences_brute_collection.find_one({"idAgence": store_id})
-            await agences_finale_collection.update_one({"idAgence": store_id}, {"$set": agence_data}, upsert=True)
+            await agences_finale_collection.update_one(
+                {"idAgence": store_id},
+                {"$set": agence_data},
+                upsert=True
+            )
             updated_agences.append({"idAgence": store_id, "name": agence.get("name"), **update_data})
             logger.info(f"✅ Agence {store_id} scrapée et transférée")
 
@@ -192,4 +206,4 @@ async def scrape_agences(queue):
             remaining_agences -= 1
 
     logger.info(f"🏁 Scraping terminé - Total agences traitées : {total_agences}, mises à jour : {len(updated_agences)}")
-    queue.put({"status": "success", "data": {"updated": updated_agences, "total": total_agences, "remaining": remaining_agences}})
+    await queue.put({"status": "success", "data": {"updated": updated_agences, "total": total_agences, "remaining": remaining_agences}})

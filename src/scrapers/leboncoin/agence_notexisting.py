@@ -8,7 +8,7 @@ from src.scrapers.leboncoin.utils.human_behavorScrapperLbc import (
     human_like_delay_search,
     human_like_scroll_to_element_search
 )
-from src.scrapers.leboncoin.utils.agence_scraper import scrape_agence_details  # Import factorisé
+from src.scrapers.leboncoin.utils.agence_scraper import scrape_agence_details
 from playwright.async_api import Page, TimeoutError
 from loguru import logger
 
@@ -28,7 +28,7 @@ async def scrape_annonce_agences(queue):
 
     if total_annonces == 0:
         logger.info("ℹ️ Aucune annonce sans idAgence à traiter.")
-        queue.put({"status": "success", "data": {"updated": [], "skipped": [], "total": 0, "remaining": 0}})
+        await queue.put({"status": "success", "data": {"updated": [], "skipped": [], "total": 0, "remaining": 0}})
         return
 
     updated_annonces = []
@@ -73,6 +73,7 @@ async def scrape_annonce_agences(queue):
                 agence_name = await agence_link_locator.text_content()
                 store_id = agence_link.split("/boutique/")[1].split("/")[0]
 
+                # Vérifier dans agencesFinale avec "idAgence"
                 agence = await agences_finale_collection.find_one({"idAgence": store_id})
                 if agence:
                     annonce["idAgence"] = store_id
@@ -81,10 +82,11 @@ async def scrape_annonce_agences(queue):
                     updated_annonces.append({"idSec": annonce_id, "idAgence": store_id})
                     continue
 
+                # Vérifier dans agencesBrute avec "idAgence"
                 agence_brute = await agences_brute_collection.find_one({"idAgence": store_id})
                 if not agence_brute:
                     await agences_brute_collection.insert_one({
-                        "idAgence": store_id,
+                        "idAgence": store_id,  # Utiliser "idAgence" ici
                         "name": agence_name,
                         "lien": f"https://www.leboncoin.fr{agence_link}",
                         "scraped": False
@@ -94,9 +96,16 @@ async def scrape_annonce_agences(queue):
                 try:
                     await agence_page.goto(f"https://www.leboncoin.fr{agence_link}", timeout=60000)
                     update_data = await scrape_agence_details(agence_page, store_id, agence_link)
-                    await agences_brute_collection.update_one({"idAgence": store_id}, {"$set": update_data})
+                    await agences_brute_collection.update_one(
+                        {"idAgence": store_id},
+                        {"$set": update_data}
+                    )
                     agence_data = await agences_brute_collection.find_one({"idAgence": store_id})
-                    await agences_finale_collection.update_one({"idAgence": store_id}, {"$set": agence_data}, upsert=True)
+                    await agences_finale_collection.update_one(
+                        {"idAgence": store_id},
+                        {"$set": agence_data},
+                        upsert=True
+                    )
                     annonce["idAgence"] = store_id
                     await realstate_withagence_collection.update_one({"idSec": annonce_id}, {"$set": annonce}, upsert=True)
                     await realstate_collection.delete_one({"idSec": annonce_id})
@@ -116,4 +125,4 @@ async def scrape_annonce_agences(queue):
             remaining_annonces -= 1
 
     logger.info(f"🏁 Scraping terminé - Total : {total_annonces}, mises à jour : {len(updated_annonces)}, skippées : {len(skipped_annonces)}")
-    queue.put({"status": "success", "data": {"updated": updated_annonces, "skipped": skipped_annonces, "total": total_annonces, "remaining": remaining_annonces}})
+    await queue.put({"status": "success", "data": {"updated": updated_annonces, "skipped": skipped_annonces, "total": total_annonces, "remaining": remaining_annonces}})
