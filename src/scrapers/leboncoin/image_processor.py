@@ -71,7 +71,6 @@ async def process_and_transfer_images() -> None:
                 if not result["skipped"]:
                     logger.info(f"✅ Annonce {annonce_id} traitée et transférée vers realStateFinale.")
                     # Supprimer de realStateWithAgence après transfert réussi
-                    await source_db["realStateWithAgence"].delete_one({"idSec": annonce_id})
                 else:
                     logger.info(f"ℹ️ Annonce {annonce_id} non transférée (doublon ou échec images), reste dans realStateWithAgence.")
 

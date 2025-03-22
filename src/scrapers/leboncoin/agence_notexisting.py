@@ -197,7 +197,6 @@ async def scrape_annonce_agences(queue):
 
                     if await annonce_page.locator("text='Page non trouvée'").is_visible(timeout=3000):
                         logger.warning(f"⚠️ Page non trouvée pour l’annonce {annonce_id}, suppression en cours...")
-                        await realstate_collection.delete_one({"idSec": annonce_id})
                         skipped_annonces.append(annonce_id)
                         remaining_annonces -= 1
                         continue
@@ -241,7 +240,6 @@ async def scrape_annonce_agences(queue):
                                 {"$set": annonce},
                                 upsert=True
                             )
-                            await realstate_collection.delete_one({"idSec": annonce_id})
 
                             annonce_data = await realstate_withagence_collection.find_one({"idSec": annonce_id})
                             await realstate_finale_collection.update_one(
@@ -249,7 +247,6 @@ async def scrape_annonce_agences(queue):
                                 {"$set": annonce_data},
                                 upsert=True
                             )
-                            await realstate_withagence_collection.delete_one({"idSec": annonce_id})
 
                             updated_annonces.append({"idSec": annonce_id, "idAgence": store_id})
                             logger.info(f"✅ Annonce {annonce_id} et agence {store_id} traitées et transférées")
