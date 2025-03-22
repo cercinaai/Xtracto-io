@@ -136,86 +136,68 @@ async def check_image_url(url: str) -> bool:
 
 async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
     """
-    Transfer an annonce from realStateWithAgence to realStateFinale, processing images if not uploaded to Backblaze.
-    Only transfers if all valid images are successfully uploaded.
+    Transfère une annonce de realStateWithAgence vers realStateFinale, en traitant les images.
+    Ne transfère pas si toutes les images valides ne sont pas uploadées avec succès sur Backblaze.
 
     Args:
-        annonce (Dict): The annonce document to transfer.
+        annonce (Dict): L'annonce à transférer.
 
     Returns:
-        Dict: A dictionary containing the annonce ID, updated image URLs, and skipped status.
-              - "skipped": True if already in realStateFinale or image processing fails.
-              - "skipped": False if successfully transferred.
+        Dict: Résultat avec idSec, images mises à jour, et statut skipped.
     """
     source_db = get_source_db()
     dest_db = get_destination_db()
     annonce_id = annonce["idSec"]
 
-    # Check for duplicates in realStateFinale based solely on idSec
+    # Vérifier si déjà dans realStateFinale
     dest_collection = dest_db["realStateFinale"]
     existing = await dest_collection.find_one({"idSec": annonce_id})
     if existing:
-        logger.info(f"ℹ️ Annonce {annonce_id} déjà présente dans realStateFinale, mise à jour si nécessaire.")
-        update_data = {}
-        for key, value in annonce.items():
-            if key != "_id" and (key not in existing or existing[key] != value):
-                update_data[key] = value
-        if update_data:
-            await dest_collection.update_one({"idSec": annonce_id}, {"$set": update_data})
+        logger.info(f"ℹ️ Annonce {annonce_id} déjà présente dans realStateFinale.")
         return {"idSec": annonce_id, "images": annonce.get("images", []), "skipped": True}
 
+    # Vérifier les images
     image_urls = annonce.get("images", [])
     if not image_urls or all(url == "N/A" for url in image_urls):
-        logger.info(f"ℹ️ Annonce {annonce_id} n'a pas d'images valides à traiter, pas de transfert.")
+        logger.info(f"ℹ️ Annonce {annonce_id} n'a pas d'images valides, reste dans realStateWithAgence.")
         return {"idSec": annonce_id, "images": image_urls or [], "skipped": True}
 
-    # Process images without modifying the original annonce yet
-    updated_image_urls = []
-    all_images_successful = True
-
-    for url in image_urls:
+    # Traiter les images en parallèle
+    tasks = []
+    for idx, url in enumerate(image_urls):
         if url == "N/A" or url.startswith("https://f003.backblazeb2.com"):
-            updated_image_urls.append(url)
-            continue
+            tasks.append(asyncio.ensure_future(asyncio.sleep(0, result=url)))
+        else:
+            file_name = f"{annonce_id}_{idx}.jpg"
+            tasks.append(upload_image_to_b2(url, file_name))
 
-        if not await check_image_url(url):
-            logger.warning(f"⚠️ Image inaccessible pour {annonce_id}: {url}")
-            updated_image_urls.append(url)  # Garder l'original
-            all_images_successful = False
-            continue
+    updated_image_urls = await asyncio.gather(*tasks, return_exceptions=True)
+    all_successful = True
+    final_urls = []
 
-        try:
-            file_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in urlparse(url).path.split('/')[-1] or "default.jpg")
-            uploaded_url = await upload_image_to_b2(url, file_name)
-            if uploaded_url == "N/A":
-                logger.warning(f"⚠️ Échec upload image {url} pour {annonce_id}: URL invalide après tentative")
-                updated_image_urls.append(url)  # Garder l'original
-                all_images_successful = False
-            else:
-                updated_image_urls.append(uploaded_url)
-        except Exception as e:
-            logger.warning(f"⚠️ Échec upload image {url} pour {annonce_id}: {e}")
-            updated_image_urls.append(url)  # Garder l'original
-            all_images_successful = False
+    for url, result in zip(image_urls, updated_image_urls):
+        if isinstance(result, Exception) or result == "N/A":
+            final_urls.append(url)  # Conserver l'URL originale
+            all_successful = False
+        else:
+            final_urls.append(result)
 
-    # Si toutes les images valides n'ont pas été téléchargées avec succès, ne pas transférer
-    if not all_images_successful:
-        logger.info(f"ℹ️ Annonce {annonce_id} non transférée : échec du traitement d'au moins une image.")
+    # Si toutes les images valides n'ont pas été uploadées avec succès, ne pas transférer
+    if not all_successful:
+        logger.info(f"ℹ️ Annonce {annonce_id} non transférée : échec upload d'au moins une image.")
         return {"idSec": annonce_id, "images": image_urls, "skipped": True}
 
-    # Si on arrive ici, toutes les images valides ont été téléchargées avec succès
+    # Préparer l'annonce pour le transfert
     annonce_to_transfer = annonce.copy()
-    annonce_to_transfer["images"] = updated_image_urls
-    annonce_to_transfer["nbrImages"] = len(updated_image_urls)
+    annonce_to_transfer["images"] = final_urls
+    annonce_to_transfer["nbrImages"] = len(final_urls)
     annonce_to_transfer["scraped_at"] = datetime.utcnow()
     annonce_to_transfer["processed"] = True
     annonce_to_transfer["processed_at"] = datetime.utcnow()
-
     if "_id" in annonce_to_transfer:
-        del annonce_to_transfer["_id"]  # Supprimer _id pour éviter conflit
+        del annonce_to_transfer["_id"]
 
     # Transférer vers realStateFinale
     await dest_collection.insert_one(annonce_to_transfer)
     logger.info(f"✅ Annonce {annonce_id} transférée avec succès vers realStateFinale.")
-
-    return {"idSec": annonce_id, "images": updated_image_urls, "skipped": False}
+    return {"idSec": annonce_id, "images": final_urls, "skipped": False}

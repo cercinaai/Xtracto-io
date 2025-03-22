@@ -1,13 +1,14 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from src.database.database import init_db, get_source_db, get_destination_db
 from src.database.realState import transfer_from_withagence_to_finale
 
 logger = logging.getLogger(__name__)
 
-async def process_and_transfer_images() -> None:
-    logger.info("🚀 Début du traitement continu des images...")
+async def process_and_transfer_images(instances: int = 5) -> None:
+    """Traite et transfère les annonces en continu avec plusieurs instances, vérifie toutes les heures."""
+    logger.info(f"🚀 Début du traitement continu des images avec {instances} instances...")
     try:
         await init_db()
         logger.info("✅ Base de données initialisée avec succès.")
@@ -15,70 +16,66 @@ async def process_and_transfer_images() -> None:
         logger.error(f"❌ Échec de l'initialisation de la base de données: {e}")
         return
 
+    # Lancer les instances en parallèle
+    tasks = [process_instance(i) for i in range(instances)]
+    await asyncio.gather(*tasks)
+
+async def process_instance(instance_id: int) -> None:
+    """Instance individuelle de traitement des annonces avec vérification horaire."""
     source_db = get_source_db()
     dest_db = get_destination_db()
+    last_check = datetime.now() - timedelta(hours=1)  # Forcer la première vérification
 
     while True:
         try:
-            logger.debug("🔄 Nouvelle itération de traitement des images.")
+            current_time = datetime.now()
+            if (current_time - last_check).total_seconds() >= 3600:  # Vérifier toutes les heures
+                logger.info(f"⏰ Instance {instance_id} : Vérification horaire des nouvelles annonces.")
+                last_check = current_time
 
-            # Récupérer les idSec déjà présents dans realStateFinale
+            # Récupérer les annonces éligibles (avec images valides, non traitées, pas dans finale)
             finale_ids = await dest_db["realStateFinale"].distinct("idSec")
-
-            # Traitement des annonces sans images (marquer comme traitées, pas de transfert)
-            zero_images_query = {
+            query = {
                 "idAgence": {"$exists": True},
-                "images": {"$in": [[], None]},  # Images vides ou absentes
-                "processed": {"$ne": True}
+                "images": {
+                    "$exists": True,
+                    "$ne": [],
+                    "$nin": [[], ["N/A"]],  # Exclure annonces sans images ou avec uniquement "N/A"
+                },
+                "processed": {"$ne": True},
+                "idSec": {"$nin": finale_ids}
             }
-            zero_images_count = await source_db["realStateWithAgence"].count_documents(zero_images_query)
-            logger.info(f"ℹ️ {zero_images_count} annonces sans images à marquer comme traitées.")
+            batch_size = 20  # Traiter par lots de 20 pour plus de rapidité
+            annonces = await source_db["realStateWithAgence"].find(query).limit(batch_size).to_list(length=None)
 
-            if zero_images_count > 0:
-                zero_images_annonces = await source_db["realStateWithAgence"].find(zero_images_query).to_list(length=None)
-                for annonce in zero_images_annonces:
-                    annonce_id = annonce["idSec"]
-                    logger.info(f"✅ Marquage de l'annonce sans images {annonce_id} comme traitée (non transférée).")
+            if not annonces:
+                logger.debug(f"⏳ Instance {instance_id} : Aucune annonce à traiter, attente de 10 secondes.")
+                await asyncio.sleep(10)
+                continue
+
+            # Traitement parallèle des annonces dans le lot
+            tasks = [transfer_from_withagence_to_finale(annonce) for annonce in annonces]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for annonce, result in zip(annonces, results):
+                annonce_id = annonce["idSec"]
+                if isinstance(result, Exception):
+                    logger.error(f"⚠️ Instance {instance_id} : Erreur pour {annonce_id}: {result}")
+                    continue
+                if not result["skipped"]:
+                    logger.info(f"✅ Instance {instance_id} : Annonce {annonce_id} transférée.")
                     await source_db["realStateWithAgence"].update_one(
                         {"idSec": annonce_id},
                         {"$set": {"processed": True, "processed_at": datetime.utcnow()}}
                     )
-
-            # Traitement des annonces avec images non présentes dans realStateFinale
-            query = {
-                "idAgence": {"$exists": True},
-                "images": {"$exists": True, "$ne": [], "$nin": [[], ["N/A"]]},  # Au moins une image valide
-                "processed": {"$ne": True},
-                "idSec": {"$nin": finale_ids}  # Exclure celles déjà dans realStateFinale
-            }
-            remaining_count = await source_db["realStateWithAgence"].count_documents(query)
-            logger.info(f"ℹ️ {remaining_count} annonces avec images valides à traiter et transférer.")
-
-            if remaining_count == 0:
-                logger.debug("⏳ Aucune annonce avec images valides à traiter, attente de 10 secondes.")
-                await asyncio.sleep(10)
-                continue
-
-            # Traiter toutes les annonces correspondantes dans cette itération
-            annonces = await source_db["realStateWithAgence"].find(query).to_list(length=None)
-            for annonce in annonces:
-                annonce_id = annonce["idSec"]
-                annonce_title = annonce.get("title", "Sans titre")
-                logger.info(f"🔍 Début du traitement de l'annonce {annonce_id} ({annonce_title}).")
-
-                # Transférer vers realStateFinale avec traitement des images
-                result = await transfer_from_withagence_to_finale(annonce)
-                if not result["skipped"]:
-                    logger.info(f"✅ Annonce {annonce_id} traitée et transférée vers realStateFinale.")
-                    # Supprimer de realStateWithAgence après transfert réussi
                 else:
-                    logger.info(f"ℹ️ Annonce {annonce_id} non transférée (doublon ou échec images), reste dans realStateWithAgence.")
+                    logger.info(f"ℹ️ Instance {instance_id} : Annonce {annonce_id} non transférée (images invalides ou déjà présente).")
 
-            await asyncio.sleep(1)  # Pause entre itérations
+            await asyncio.sleep(1)  # Pause entre lots pour éviter surcharge
 
         except Exception as e:
-            logger.error(f"⚠️ Erreur dans la boucle de traitement: {e}")
-            await asyncio.sleep(10)  # Attendre avant de réessayer en cas d'erreur
+            logger.error(f"⚠️ Instance {instance_id} : Erreur dans la boucle: {e}")
+            await asyncio.sleep(10)  # Attendre avant de réessayer
 
 if __name__ == "__main__":
     asyncio.run(process_and_transfer_images())

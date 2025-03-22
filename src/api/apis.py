@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from src.scrapers.leboncoin.image_processor import process_and_transfer_images
 from src.scrapers.leboncoin.firstScrapper import open_leboncoin
 from src.scrapers.leboncoin.leboncoinLoopScrapper import open_leboncoin_loop
@@ -7,20 +7,13 @@ from src.scrapers.leboncoin.agence_notexisting import scrape_annonce_agences
 from loguru import logger
 from multiprocessing import Process, Queue
 import asyncio
+from datetime import datetime
+from src.api.cron import running_tasks, cleanup_task
 
 api_router = APIRouter()
 
-running_tasks = {
-    "scrape_100_pages": False,
-    "scrape_loop": False,
-    "scrape_agence_brute": False,
-    "scrape_agence_notexisting": False,
-    "process_and_transfer": False
-}
-
-active_processes = {}
-
 def run_in_process(queue: Queue, func, task_name: str):
+    """Exécute une fonction asynchrone dans un processus séparé."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -28,103 +21,106 @@ def run_in_process(queue: Queue, func, task_name: str):
     except Exception as e:
         queue.put({"status": "error", "message": str(e)})
     finally:
-        running_tasks[task_name] = False
+        running_tasks[task_name].running = False
         loop.close()
-        if task_name in active_processes:
-            del active_processes[task_name]
+
+async def run_scraper_task(queue: Queue, func, task_name: str, background_tasks: BackgroundTasks):
+    """Lance un scraper et surveille son exécution."""
+    if running_tasks[task_name].running:
+        return {"message": f"{task_name.replace('_', ' ').title()} en cours", "status": "running"}
+    
+    running_tasks[task_name].running = True
+    process = Process(target=run_in_process, args=(queue, func, task_name))
+    process.start()
+    background_tasks.add_task(monitor_queue, queue, task_name)
+    logger.info(f"🚀 Lancement de {task_name}")
+    return {"message": f"{task_name.replace('_', ' ').title()} lancé", "status": "started"}
 
 @api_router.get("/scrape/leboncoin/100_pages")
 async def scrape_100_pages_endpoint(background_tasks: BackgroundTasks):
-    if running_tasks["scrape_100_pages"]:
-        return {"message": "Scraping 100 pages en cours", "status": "running"}
-    running_tasks["scrape_100_pages"] = True
-    queue = Queue()
-    process = Process(target=run_in_process, args=(queue, open_leboncoin, "scrape_100_pages"))
-    active_processes["scrape_100_pages"] = process
-    process.start()
-    background_tasks.add_task(monitor_queue, queue, "scrape_100_pages")
-    logger.info("🌐 Lancement du scraping des 100 pages")
-    return {"message": "Scraping des 100 pages lancé", "status": "started"}
+    """Lance le scraper des 100 premières pages."""
+    return await run_scraper_task(Queue(), open_leboncoin, "first_scraper", background_tasks)
 
 @api_router.get("/scrape/leboncoin/loop")
 async def scrape_loop_endpoint(background_tasks: BackgroundTasks):
-    if running_tasks["scrape_loop"]:
-        return {"message": "Scraping en boucle en cours", "status": "running"}
-    running_tasks["scrape_loop"] = True
-    queue = Queue()
-    process = Process(target=run_in_process, args=(queue, open_leboncoin_loop, "scrape_loop"))
-    active_processes["scrape_loop"] = process
-    process.start()
-    background_tasks.add_task(monitor_queue, queue, "scrape_loop")
-    logger.info("🔄 Lancement du scraping en boucle")
-    return {"message": "Scraping en boucle lancé", "status": "started"}
+    """Lance le scraper en boucle."""
+    return await run_scraper_task(Queue(), open_leboncoin_loop, "loop_scraper", background_tasks)
 
 @api_router.get("/scrape/leboncoin/agence_brute")
 async def scrape_agence_brute_endpoint(background_tasks: BackgroundTasks):
-    if running_tasks["scrape_agence_brute"]:
-        return {"message": "Scraping agences brutes en cours", "status": "running"}
-    running_tasks["scrape_agence_brute"] = True
-    queue = Queue()
-    process = Process(target=run_in_process, args=(queue, scrape_agences, "scrape_agence_brute"))
-    active_processes["scrape_agence_brute"] = process
-    process.start()
-    background_tasks.add_task(monitor_queue, queue, "scrape_agence_brute")
-    logger.info("🔍 Lancement du scraping des agences brutes")
-    return {"message": "Scraping des agences brutes lancé", "status": "started"}
+    """Lance le scraper des agences brutes."""
+    return await run_scraper_task(Queue(), scrape_agences, "agence_brute", background_tasks)
 
 @api_router.get("/scrape/leboncoin/agence_notexisting")
 async def scrape_agence_notexisting_endpoint(background_tasks: BackgroundTasks):
-    if running_tasks["scrape_agence_notexisting"]:
-        return {"message": "Scraping agences non existantes en cours", "status": "running"}
-    running_tasks["scrape_agence_notexisting"] = True
-    queue = Queue()
-    process = Process(target=run_in_process, args=(queue, scrape_annonce_agences, "scrape_agence_notexisting"))
-    active_processes["scrape_agence_notexisting"] = process
-    process.start()
-    background_tasks.add_task(monitor_queue, queue, "scrape_agence_notexisting")
-    logger.info("🔍 Lancement du scraping des agences non existantes")
-    return {"message": "Scraping des agences non existantes lancé", "status": "started"}
+    """Lance le scraper des agences non existantes."""
+    return await run_scraper_task(Queue(), scrape_annonce_agences, "agence_notexisting", background_tasks)
 
 @api_router.get("/scrape/leboncoin/process_and_transfer")
-async def process_and_transfer_images_endpoint(background_tasks: BackgroundTasks):
-    if running_tasks["process_and_transfer"]:
-        return {"message": "Traitement images en cours", "status": "running"}
-    running_tasks["process_and_transfer"] = True
-    background_tasks.add_task(process_and_transfer_images)
-    logger.info("📸 Lancement du traitement des images")
-    return {"message": "Traitement des images lancé", "status": "started"}
+async def process_and_transfer_images_endpoint(background_tasks: BackgroundTasks, instances: int = 5):
+    """Lance le traitement des images avec un nombre configurable d'instances."""
+    if running_tasks["process_and_transfer"].running:
+        return {"message": "Traitement des images en cours", "status": "running"}
+    
+    if instances < 1 or instances > 10:  # Limite raisonnable pour éviter surcharge
+        raise HTTPException(status_code=400, detail="Le nombre d'instances doit être entre 1 et 10.")
+    
+    running_tasks["process_and_transfer"].running = True
+    background_tasks.add_task(process_and_transfer_images, instances)
+    logger.info(f"📸 Lancement du traitement des images avec {instances} instances")
+    return {"message": f"Traitement des images lancé avec {instances} instances", "status": "started"}
 
 @api_router.get("/stop/{task_name}")
 async def stop_task(task_name: str):
-    if task_name in active_processes and running_tasks[task_name]:
-        process = active_processes[task_name]
-        process.terminate()
-        running_tasks[task_name] = False
-        del active_processes[task_name]
-        logger.info(f"🛑 Tâche {task_name} arrêtée.")
+    """Arrête une tâche spécifique."""
+    valid_tasks = ["first_scraper", "loop_scraper", "agence_brute", "agence_notexisting", "process_and_transfer"]
+    if task_name not in valid_tasks:
+        raise HTTPException(status_code=400, detail=f"Tâche {task_name} invalide. Tâches valides : {valid_tasks}")
+    
+    state = running_tasks[task_name]
+    if state.running:
+        await cleanup_task(task_name)
+        if state.task:
+            try:
+                state.task.cancel()
+                await asyncio.wait([state.task])
+            except asyncio.CancelledError:
+                pass
+        logger.info(f"🛑 Tâche {task_name} arrêtée")
         return {"message": f"Tâche {task_name} arrêtée", "status": "stopped"}
-    return {"message": f"Tâche {task_name} non en cours", "status": "idle"}
+    return {"message": f"Tâche {task_name} n'est pas en cours", "status": "idle"}
 
 async def monitor_queue(queue: Queue, task_name: str):
-    while running_tasks[task_name]:
+    """Surveille la file d'attente pour les résultats ou erreurs."""
+    timeout = 3600  # 1 heure max d'attente
+    start_time = asyncio.get_event_loop().time()
+    
+    while running_tasks[task_name].running:
         if not queue.empty():
             result = queue.get()
             logger.info(f"📥 Résultat pour {task_name} : {result}")
             if result["status"] == "error":
                 logger.error(f"⚠️ Erreur dans {task_name} : {result['message']}")
+                await cleanup_task(task_name)
             break
-        elif task_name not in active_processes or not active_processes[task_name].is_alive():
-            logger.error(f"⚠️ Processus {task_name} a planté.")
-            running_tasks[task_name] = False
+        if asyncio.get_event_loop().time() - start_time > timeout:
+            logger.warning(f"⌛ Timeout atteint pour {task_name}, arrêt forcé")
+            await cleanup_task(task_name)
             break
         await asyncio.sleep(1)
 
 @api_router.get("/status")
 async def get_task_status():
+    """Retourne l'état de toutes les tâches."""
     return {
-        "scrape_100_pages": "running" if running_tasks["scrape_100_pages"] else "idle",
-        "scrape_loop": "running" if running_tasks["scrape_loop"] else "idle",
-        "scrape_agence_brute": "running" if running_tasks["scrape_agence_brute"] else "idle",
-        "scrape_agence_notexisting": "running" if running_tasks["scrape_agence_notexisting"] else "idle",
-        "process_and_transfer": "running" if running_tasks["process_and_transfer"] else "idle"
+        "first_scraper": "running" if running_tasks["first_scraper"].running else "idle",
+        "loop_scraper": "running" if running_tasks["loop_scraper"].running else "idle",
+        "agence_brute": "running" if running_tasks["agence_brute"].running else "idle",
+        "agence_notexisting": "running" if running_tasks["agence_notexisting"].running else "idle",
+        "process_and_transfer": "running" if running_tasks["process_and_transfer"].running else "idle"
     }
+
+@api_router.get("/health")
+async def health_check():
+    """Vérifie la santé globale de l'API."""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
