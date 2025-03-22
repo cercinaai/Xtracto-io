@@ -188,12 +188,15 @@ async def scrape_annonce_agences(queue):
                             await asyncio.sleep(10)
                             raise Exception("CAPTCHA failure, restarting session")
 
-                    agence_link_locator = annonce_page.locator("a[href*='/boutique/']")
-                    if await agence_link_locator.is_visible(timeout=5000):
+                    # Sélecteur spécifique pour le lien principal de l'agence
+                    agence_link_locator = annonce_page.locator("a.text-body-1.custom\\:text-headline-2.block.truncate.font-bold[href*='/boutique/']")
+                    if await agence_link_locator.count() > 0:  # Vérifie s'il y a au moins un élément
                         await human_like_scroll_to_element_search(annonce_page, agence_link_locator, scroll_steps=2, jitter=True)
                         agence_link = await agence_link_locator.get_attribute("href")
                         agence_name = await agence_link_locator.text_content()
-                        store_id = agence_link.split("/boutique/")[1].split("/")[0]
+                        store_id = agence_link.split("/boutique/")[1].split("/")[0]  # Extrait le numéro (ex. 11959)
+
+                        logger.info(f"🔗 Lien d'agence trouvé : {agence_link}, store_id : {store_id}")
 
                         # Vérifier si l'agence existe dans agencesFinale
                         existing_agence = await agences_finale_collection.find_one({"idAgence": store_id})
