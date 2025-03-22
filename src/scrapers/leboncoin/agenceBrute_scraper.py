@@ -1,5 +1,4 @@
 import asyncio
-import random
 from datetime import datetime
 from src.captcha.captchaSolver import solve_audio_captcha
 from src.config.browserConfig import setup_browser, cleanup_browser
@@ -16,7 +15,7 @@ async def scrape_agence_details(page: Page, store_id: str, lien: str) -> dict:
     """Scrape les détails d'une agence à partir de sa page."""
     update_data = {"scraped": True, "scraped_at": datetime.utcnow()}
 
-    # CodeSiren
+    # CodeSiren (ne pas lever d'exception si absent)
     code_siren = "Non trouvé"
     try:
         siren_locator = page.locator('h3[data-qa-id="siren_number"]')
@@ -25,11 +24,8 @@ async def scrape_agence_details(page: Page, store_id: str, lien: str) -> dict:
             siren_text = await siren_locator.text_content()
             code_siren = siren_text.replace("SIREN : ", "").strip() if siren_text else "Non trouvé"
             logger.info(f"✅ CodeSiren trouvé pour l’agence {store_id} : {code_siren}")
-        if code_siren == "Non trouvé":
-            raise ValueError(f"CodeSiren non trouvé pour {store_id}, scraping interrompu.")
     except Exception as e:
         logger.warning(f"⚠️ CodeSiren non trouvé pour l’agence {store_id} : {e}")
-        raise  # Propager l’erreur
     update_data["CodeSiren"] = code_siren
 
     # Adresse
@@ -157,53 +153,71 @@ async def scrape_agences(queue):
     updated_agences = []
     remaining_agences = total_agences
 
-    for index, agence in enumerate(agences, 1):
-        # Gérer les deux clés possibles : "idAgence" ou "storeId"
-        store_id = agence.get("idAgence") or agence.get("storeId")
-        if not store_id:
-            logger.error(f"❌ Aucune clé 'idAgence' ou 'storeId' trouvée pour l'agence {agence.get('_id')}")
+    browser = context = client = profile_id = playwright = None
+    try:
+        browser, context, client, profile_id, playwright = await setup_browser()
+        page = await context.new_page()
+        await page.goto("https://www.leboncoin.fr/", timeout=60000)  # Navigation initiale
+        await human_like_delay_search(1, 3)
+
+        if await page.locator('iframe[title="DataDome CAPTCHA"]').is_visible(timeout=5000):
+            if not await solve_audio_captcha(page):
+                logger.error("❌ Échec de la résolution du CAPTCHA initial")
+                await queue.put({"status": "error", "message": "Échec CAPTCHA initial"})
+                return
+            await human_like_delay_search(2, 5)
+
+        cookie_button = page.locator("button", has_text="Accepter")
+        if await cookie_button.is_visible(timeout=5000):
+            await human_like_click_search(page, cookie_button, move_cursor=True, click_delay=0.2)
+            await human_like_delay_search(0.2, 0.5)
+
+        for index, agence in enumerate(agences, 1):
+            store_id = agence.get("idAgence") or agence.get("storeId")
+            if not store_id:
+                logger.error(f"❌ Aucune clé 'idAgence' ou 'storeId' trouvée pour l'agence {agence.get('_id')}")
+                remaining_agences -= 1
+                continue
+
+            lien = agence.get("lien")
+            logger.info(f"🔍 Scraping de l’agence {store_id} ({index}/{total_agences}) : {lien}")
+
+            agence_page = await context.new_page()
+            try:
+                await agence_page.goto(lien, timeout=90000)
+                await human_like_delay_search(1, 3)
+
+                if await agence_page.locator('iframe[title="DataDome CAPTCHA"]').is_visible(timeout=5000):
+                    if not await solve_audio_captcha(agence_page):
+                        logger.error(f"❌ Échec de la résolution du CAPTCHA pour l’agence {store_id}")
+                        remaining_agences -= 1
+                        continue
+                    await human_like_delay_search(2, 5)
+
+                update_data = await scrape_agence_details(agence_page, store_id, lien)
+                await agences_brute_collection.update_one(
+                    {"_id": agence["_id"]},
+                    {"$set": {**update_data, "idAgence": store_id}, "$unset": {"storeId": ""}}
+                )
+                agence_data = await agences_brute_collection.find_one({"idAgence": store_id})
+                await agences_finale_collection.update_one(
+                    {"idAgence": store_id},
+                    {"$set": agence_data},
+                    upsert=True
+                )
+                updated_agences.append({"idAgence": store_id, "name": agence.get("name"), **update_data})
+                logger.info(f"✅ Agence {store_id} scrapée et transférée")
+            except Exception as e:
+                logger.error(f"⚠️ Erreur lors du scraping de l’agence {store_id} : {e}")
+            finally:
+                await agence_page.close()
             remaining_agences -= 1
-            continue
 
-        lien = agence.get("lien")
-        logger.info(f"🔍 Scraping de l’agence {store_id} ({index}/{total_agences}) : {lien}")
-
-        browser = context = client = profile_id = playwright = None
-        try:
-            browser, context, client, profile_id, playwright = await setup_browser()
-            page = await context.new_page()
-            await page.goto(lien, timeout=90000)
-            await human_like_delay_search(1, 3)
-
-            if await page.locator('iframe[title="DataDome CAPTCHA"]').is_visible(timeout=5000):
-                if not await solve_audio_captcha(page):
-                    logger.error(f"❌ Échec de la résolution du CAPTCHA pour l’agence {store_id}")
-                    remaining_agences -= 1
-                    continue
-                await human_like_delay_search(2, 5)
-
-            update_data = await scrape_agence_details(page, store_id, lien)
-            # Harmoniser la clé dans agencesBrute
-            await agences_brute_collection.update_one(
-                {"_id": agence["_id"]},
-                {"$set": {**update_data, "idAgence": store_id}, "$unset": {"storeId": ""}}
-            )
-            agence_data = await agences_brute_collection.find_one({"idAgence": store_id})
-            await agences_finale_collection.update_one(
-                {"idAgence": store_id},
-                {"$set": agence_data},
-                upsert=True
-            )
-            updated_agences.append({"idAgence": store_id, "name": agence.get("name"), **update_data})
-            logger.info(f"✅ Agence {store_id} scrapée et transférée")
-
-        except Exception as e:
-            logger.error(f"⚠️ Erreur lors du scraping de l’agence {store_id} : {e}")
-        finally:
-            if 'page' in locals():
-                await page.close()
-            await cleanup_browser(client, profile_id, playwright, browser)
-            remaining_agences -= 1
+    except Exception as e:
+        logger.error(f"⚠️ Erreur générale : {e}")
+        await queue.put({"status": "error", "message": str(e)})
+    finally:
+        await cleanup_browser(client, profile_id, playwright, browser)
 
     logger.info(f"🏁 Scraping terminé - Total agences traitées : {total_agences}, mises à jour : {len(updated_agences)}")
     await queue.put({"status": "success", "data": {"updated": updated_agences, "total": total_agences, "remaining": remaining_agences}})
