@@ -37,7 +37,7 @@ async def process_instance(instance_id: int) -> None:
                 "idAgence": {"$exists": True},
                 "images": {"$exists": True, "$ne": [], "$nin": [[], ["N/A"]]},
                 "processed": {"$ne": True},
-                "idSec": {"$nin": finale_ids}
+                "idSec": {"$nin": finale_ids}  # Évite de retraiter si déjà dans finale
             }
             batch_size = 20
             annonces = await source_db["realStateWithAgence"].find(query).limit(batch_size).to_list(length=None)
@@ -55,11 +55,14 @@ async def process_instance(instance_id: int) -> None:
                     logger.debug(f"Instance {instance_id} : Erreur pour {annonce_id}, passage à la suivante : {result}")
                     continue
                 if not result["skipped"]:
+                    # Marquer comme traité dans realStateWithAgence sans supprimer
                     await source_db["realStateWithAgence"].update_one(
                         {"idSec": annonce_id},
                         {"$set": {"processed": True, "processed_at": datetime.utcnow()}}
                     )
-                # Pas de log ici pour éviter surcharge, sauf si nécessaire
+                    logger.debug(f"Instance {instance_id} : Annonce {annonce_id} traitée avec succès.")
+                else:
+                    logger.debug(f"Instance {instance_id} : Annonce {annonce_id} skippée.")
 
             await asyncio.sleep(1)
 

@@ -33,6 +33,12 @@ running_tasks = {
 
 async def cleanup_task(task_name):
     state = running_tasks[task_name]
+    if state.task and not state.task.done():
+        state.task.cancel()
+        try:
+            await state.task
+        except asyncio.CancelledError:
+            logger.info(f"🛑 Tâche {task_name} annulée avec succès.")
     if state.browser:
         await cleanup_browser(state.client, state.profile_id, state.playwright, state.browser)
         state.browser = state.context = state.client = state.profile_id = state.playwright = None
@@ -110,11 +116,12 @@ async def agence_brute_task():
                     logger.info("▶️ Lancement de agence_brute...")
                     state.running = True
                     queue = asyncio.Queue()
-                    await scrape_agences(queue)
+                    state.task = asyncio.create_task(scrape_agences(queue))
                     result = await queue.get()
                     logger.info(f"📥 Résultat de agence_brute: {result}")
                     if result["status"] == "error":
                         await cleanup_task("agence_brute")
+                    state.task = None
             else:
                 if state.running:
                     logger.info("⏹️ Arrêt de agence_brute (horaire diurne)")
@@ -138,11 +145,12 @@ async def agence_notexisting_task():
                     logger.info("▶️ Lancement de agence_notexisting...")
                     state.running = True
                     queue = asyncio.Queue()
-                    await scrape_annonce_agences(queue)
+                    state.task = asyncio.create_task(scrape_annonce_agences(queue))
                     result = await queue.get()
                     logger.info(f"📥 Résultat de agence_notexisting: {result}")
                     if result["status"] == "error":
                         await cleanup_task("agence_notexisting")
+                    state.task = None
             else:
                 if state.running:
                     logger.info("⏹️ Arrêt de agence_notexisting (horaire diurne)")
@@ -160,13 +168,13 @@ async def process_images_task():
     state.running = True
     while True:
         try:
-            await process_and_transfer_images(instances=5)  # 5 instances par défaut
+            await process_and_transfer_images(instances=5)
         except Exception as e:
             logger.error(f"⚠️ Erreur dans process_images_task: {e}")
             state.running = False
-            await asyncio.sleep(10)  # Attendre avant de réessayer
+            await asyncio.sleep(10)
             state.running = True
-            
+
 async def start_cron():
     logger.info("🚀 Démarrage des tâches cron...")
     await init_db()
@@ -175,5 +183,6 @@ async def start_cron():
     running_tasks["agence_brute"].task = asyncio.create_task(agence_brute_task())
     running_tasks["agence_notexisting"].task = asyncio.create_task(agence_notexisting_task())
     running_tasks["process_and_transfer"].task = asyncio.create_task(process_images_task())
+
 if __name__ == "__main__":
     asyncio.run(start_cron())
