@@ -154,12 +154,11 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
     existing = await dest_collection.find_one({"idSec": annonce_id})
     
     if existing:
-        # Vérifier si toutes les images sont déjà traitées et si l'agence est valide
+        # Vérifier si toutes les images sont déjà traitées
         all_images_processed = all(img.startswith("https://f003.backblazeb2.com") or img == "N/A" 
                                  for img in existing.get("images", []))
-        agence_exists = await dest_db["agencesFinale"].find_one({"idAgence": existing.get("idAgence")})
-        if all_images_processed and agence_exists:
-            logger.debug(f"Annonce {annonce_id} déjà présente avec toutes les images traitées et agence valide.")
+        if all_images_processed:
+            logger.debug(f"Annonce {annonce_id} déjà présente avec toutes les images traitées.")
             return {"idSec": annonce_id, "images": existing.get("images", []), "skipped": True}
 
     # Traiter les images
@@ -191,10 +190,10 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
         logger.debug(f"Annonce {annonce_id} n'a aucune image valide uploadée.")
         return {"idSec": annonce_id, "images": final_urls, "skipped": True}
 
-    # Vérifier l'agence
+    # Vérifier l'agence dans agencesBrute
     id_agence = annonce.get("idAgence")
-    if not id_agence or not await dest_db["agencesFinale"].find_one({"idAgence": id_agence}):
-        logger.debug(f"Annonce {annonce_id} n'a pas d'agence valide dans agencesFinale.")
+    if not id_agence or not await dest_db["agencesBrute"].find_one({"idAgence": id_agence}):
+        logger.debug(f"Annonce {annonce_id} n'a pas d'agence valide dans agencesBrute.")
         return {"idSec": annonce_id, "images": final_urls, "skipped": True}
 
     # Préparer l'annonce pour transfert ou mise à jour
