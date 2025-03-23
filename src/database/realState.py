@@ -190,10 +190,10 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
         logger.debug(f"Annonce {annonce_id} n'a aucune image valide uploadée.")
         return {"idSec": annonce_id, "images": final_urls, "skipped": True}
 
-    # Vérifier l'agence dans agencesBrute
-    id_agence = annonce.get("idAgence")
-    if not id_agence or not await dest_db["agencesBrute"].find_one({"idAgence": id_agence}):
-        logger.debug(f"Annonce {annonce_id} n'a pas d'agence valide dans agencesBrute.")
+    # Vérifier l'agence dans agencesBrute avec storeId
+    store_id = annonce.get("storeId")
+    if not store_id or not await dest_db["agencesBrute"].find_one({"idAgence": store_id}):
+        logger.debug(f"Annonce {annonce_id} n'a pas d'agence valide dans agencesBrute (storeId: {store_id}).")
         return {"idSec": annonce_id, "images": final_urls, "skipped": True}
 
     # Préparer l'annonce pour transfert ou mise à jour
