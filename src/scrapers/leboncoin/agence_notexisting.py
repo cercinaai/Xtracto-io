@@ -125,18 +125,20 @@ async def scrape_agence_details(page: Page, store_id: str, lien: str) -> dict:
     return update_data
 
 async def scrape_annonce_agences(queue):
-    """Scrape les annonces de realState non présentes dans realStateWithAgence et traite leurs agences."""
+    """Scrape les annonces de realState, traite les agences et transfère dans realStateWithAgence si agence trouvée."""
     logger.info("🚀 Démarrage du scraping des annonces dans realState...")
     source_db = get_source_db()
     dest_db = get_destination_db()
     realstate_collection = source_db["realState"]
     realstate_withagence_collection = source_db["realStateWithAgence"]
+    agences_brute_collection = source_db["agencesBrute"]
     agences_finale_collection = dest_db["agencesFinale"]
 
     while True:
         withagence_ids = await realstate_withagence_collection.distinct("idSec")
         annonces = await realstate_collection.find({
-            "idSec": {"$nin": withagence_ids}
+            "idSec": {"$nin": withagence_ids},
+            "noAgenceFound": {"$ne": True}  # Ne traite pas celles déjà marquées sans agence
         }).to_list(length=None)
         total_annonces = len(annonces)
         logger.info(f"📊 Nombre total d'annonces à traiter : {total_annonces}")
@@ -188,7 +190,7 @@ async def scrape_annonce_agences(queue):
                             await asyncio.sleep(10)
                             raise Exception("CAPTCHA failure, restarting session")
 
-                    # Sélecteur spécifique pour le lien principal de l'agence dans la section
+                    # Chercher le lien de l'agence
                     agence_link_locator = annonce_page.locator("section.border-sm.border-neutral\\/dim-4.bg-surface.rounded-lg a.text-body-1.custom\\:text-headline-2.block.truncate.font-bold[href*='/boutique/']")
                     agence_link = None
                     agence_name = None
@@ -196,7 +198,6 @@ async def scrape_annonce_agences(queue):
 
                     if await agence_link_locator.count() > 0:
                         try:
-                            # Prendre le premier élément et tenter de cliquer
                             first_link = agence_link_locator.first
                             await human_like_scroll_to_element_search(annonce_page, first_link, scroll_steps=2, jitter=True)
                             agence_link = await first_link.get_attribute("href")
@@ -204,66 +205,71 @@ async def scrape_annonce_agences(queue):
                             store_id = agence_link.split("/boutique/")[1].split("/")[0]
                             logger.info(f"🔗 Lien d'agence trouvé : {agence_link}, store_id : {store_id}")
 
-                            # Tenter de cliquer sur le lien
-                            await human_like_click_search(annonce_page, first_link, move_cursor=True, click_delay=0.5)
-                            await human_like_delay_search(1, 3)
-                        except Exception as e:
-                            logger.warning(f"⚠️ Échec du clic sur le lien d’agence pour l’annonce {annonce_id} : {e}, accès direct à l’URL")
-                            # Si le clic échoue, on utilisera l’URL extraite directement
+                            # Vérifier si l'agence existe déjà dans agencesFinale
+                            existing_agence = await agences_finale_collection.find_one({"idAgence": store_id})
+                            if not existing_agence:
+                                # Scraper les détails de l'agence
+                                agence_page = await context.new_page()
+                                try:
+                                    full_agence_url = f"https://www.leboncoin.fr{agence_link}"
+                                    await agence_page.goto(full_agence_url, timeout=60000)
+                                    await human_like_delay_search(1, 3)
 
-                    else:
-                        logger.warning(f"⚠️ Aucun lien d’agence trouvé pour l’annonce {annonce_id}, ajout à la liste noire")
-                        skipped_annonces.append(annonce_id)
-                        continue
+                                    if await agence_page.locator('iframe[title="DataDome CAPTCHA"]').is_visible(timeout=5000):
+                                        if not await solve_audio_captcha(agence_page):
+                                            logger.error(f"❌ Échec de la résolution du CAPTCHA pour l’agence {store_id}, fermeture...")
+                                            await agence_page.close()
+                                            raise Exception("CAPTCHA failure")
 
-                    # Vérifier si l'agence existe dans agencesFinale
-                    existing_agence = await agences_finale_collection.find_one({"idAgence": store_id})
-                    if existing_agence:
-                        logger.info(f"ℹ️ Agence {store_id} déjà dans agencesFinale, ajout direct à realStateWithAgence")
-                        annonce["idAgence"] = store_id
-                        await realstate_withagence_collection.update_one(
-                            {"idSec": annonce_id},
-                            {"$set": annonce},
-                            upsert=True
-                        )
-                        updated_annonces.append({"idSec": annonce_id, "idAgence": store_id})
-                    else:
-                        agence_page = await context.new_page()
-                        try:
-                            full_agence_url = f"https://www.leboncoin.fr{agence_link}"
-                            await agence_page.goto(full_agence_url, timeout=60000)
-                            await human_like_delay_search(1, 3)
+                                    update_data = await scrape_agence_details(agence_page, store_id, full_agence_url)
+                                    agence_data = {
+                                        "idAgence": store_id,
+                                        "name": agence_name,
+                                        "lien": full_agence_url,
+                                        **update_data
+                                    }
 
-                            if await agence_page.locator('iframe[title="DataDome CAPTCHA"]').is_visible(timeout=5000):
-                                if not await solve_audio_captcha(agence_page):
-                                    logger.error(f"❌ Échec de la résolution du CAPTCHA pour l’agence {store_id}, fermeture du navigateur...")
+                                    # Enregistrer dans agencesBrute comme traité
+                                    await agences_brute_collection.update_one(
+                                        {"idAgence": store_id},
+                                        {"$set": agence_data},
+                                        upsert=True
+                                    )
+                                    # Enregistrer dans agencesFinale
+                                    await agences_finale_collection.update_one(
+                                        {"idAgence": store_id},
+                                        {"$set": agence_data},
+                                        upsert=True
+                                    )
+                                    logger.info(f"✅ Agence {store_id} créée dans agencesBrute et agencesFinale")
+                                finally:
                                     await agence_page.close()
-                                    await cleanup_browser(client, profile_id, playwright, browser)
-                                    await asyncio.sleep(10)
-                                    raise Exception("CAPTCHA failure, restarting session")
 
-                            update_data = await scrape_agence_details(agence_page, store_id, full_agence_url)
-                            agence_data = {
-                                "idAgence": store_id,
-                                "name": agence_name,
-                                "lien": full_agence_url,
-                                **update_data
-                            }
-                            await agences_finale_collection.update_one(
-                                {"idAgence": store_id},
-                                {"$set": agence_data},
-                                upsert=True
-                            )
+                            # Transférer l'annonce dans realStateWithAgence
                             annonce["idAgence"] = store_id
+                            annonce["processed"] = False  # Pour traitement par image_processor
+                            annonce["scraped_at"] = datetime.utcnow()
                             await realstate_withagence_collection.update_one(
                                 {"idSec": annonce_id},
                                 {"$set": annonce},
                                 upsert=True
                             )
                             updated_annonces.append({"idSec": annonce_id, "idAgence": store_id})
-                            logger.info(f"✅ Agence {store_id} créée et annonce {annonce_id} ajoutée à realStateWithAgence")
-                        finally:
-                            await agence_page.close()
+                            logger.info(f"✅ Annonce {annonce_id} transférée dans realStateWithAgence avec idAgence {store_id}")
+                        except Exception as e:
+                            logger.error(f"⚠️ Erreur lors du traitement de l’agence pour {annonce_id} : {e}")
+                    else:
+                        # Aucun lien d'agence trouvé, reste dans realState
+                        logger.warning(f"⚠️ Aucun lien d’agence trouvé pour l’annonce {annonce_id}, marquage dans realState")
+                        await realstate_collection.update_one(
+                            {"idSec": annonce_id},
+                            {"$set": {
+                                "noAgenceFound": True,
+                                "scraped_at": datetime.utcnow()
+                            }}
+                        )
+                        skipped_annonces.append(annonce_id)
+                        logger.info(f"✅ Annonce {annonce_id} marquée comme sans agence dans realState")
 
                 except Exception as e:
                     if "CAPTCHA failure" in str(e):
