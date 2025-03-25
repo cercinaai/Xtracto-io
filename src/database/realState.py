@@ -125,43 +125,21 @@ async def transfer_annonce(annonce: Dict) -> bool:
         await dest_collection.insert_one(annonce)
         return True
 
-async def check_image_url(url: str) -> bool:
-    """Check if an image URL is accessible."""
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.head(url, timeout=5) as response:
-                return response.status == 200
-        except Exception:
-            return False
-
 async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
-    """
-    Transfère une annonce de realStateWithAgence vers realStateFinale avec images mises à jour,
-    en évitant les doublons sans supprimer de realStateWithAgence.
-
-    Args:
-        annonce (Dict): L'annonce à transférer.
-
-    Returns:
-        Dict: Résultat avec idSec, images mises à jour, et statut skipped.
-    """
     source_db = get_source_db()
     dest_db = get_destination_db()
     annonce_id = annonce["idSec"]
 
-    # Vérifier si déjà dans realStateFinale
     dest_collection = dest_db["realStateFinale"]
     existing = await dest_collection.find_one({"idSec": annonce_id})
     
     if existing:
-        # Vérifier si toutes les images sont déjà traitées
         all_images_processed = all(img.startswith("https://f003.backblazeb2.com") or img == "N/A" 
                                  for img in existing.get("images", []))
-        if all_images_processed:
-            logger.debug(f"Annonce {annonce_id} déjà présente avec toutes les images traitées.")
+        if all_images_processed and existing.get("processed", False):
+            logger.debug(f"Annonce {annonce_id} déjà présente avec toutes les images traitées et processed=True.")
             return {"idSec": annonce_id, "images": existing.get("images", []), "skipped": True}
 
-    # Traiter les images
     image_urls = annonce.get("images", [])
     if not image_urls or all(url == "N/A" for url in image_urls):
         logger.debug(f"Annonce {annonce_id} n'a pas d'images valides.")
@@ -186,42 +164,55 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
             final_urls.append(result)
             has_valid_image = True
 
-    if not has_valid_image:
-        logger.debug(f"Annonce {annonce_id} n'a aucune image valide uploadée.")
+    # Vérifier l'agence via idAgence dans agencesFinale, puis dans agencesBrute si non trouvé
+    id_agence = annonce.get("idAgence")
+    if id_agence:
+        agence_exists = await dest_db["agencesFinale"].find_one({"_id": {"$eq": id_agence}})
+        if not agence_exists:
+            # Si non trouvé dans agencesFinale, vérifier dans agencesBrute
+            agence_exists_in_brute = await source_db["agencesBrute"].find_one({"_id": {"$eq": id_agence}})
+            if not agence_exists_in_brute:
+                logger.warning(f"Annonce {annonce_id} a un idAgence {id_agence} non trouvé dans agencesFinale ni dans agencesBrute.")
+                return {"idSec": annonce_id, "images": final_urls, "skipped": True}
+            else:
+                logger.info(f"Annonce {annonce_id} a un idAgence {id_agence} trouvé dans agencesBrute mais pas dans agencesFinale.")
+        # Si trouvé dans agencesFinale ou agencesBrute, on continue le traitement
+    else:
+        logger.debug(f"Annonce {annonce_id} n'a pas d'idAgence.")
         return {"idSec": annonce_id, "images": final_urls, "skipped": True}
 
-    # Vérifier l'agence dans agencesBrute avec storeId
-    store_id = annonce.get("storeId")
-    if not store_id or not await dest_db["agencesBrute"].find_one({"idAgence": store_id}):
-        logger.debug(f"Annonce {annonce_id} n'a pas d'agence valide dans agencesBrute (storeId: {store_id}).")
-        return {"idSec": annonce_id, "images": final_urls, "skipped": True}
-
-    # Préparer l'annonce pour transfert ou mise à jour
     annonce_to_transfer = annonce.copy()
     annonce_to_transfer["images"] = final_urls
     annonce_to_transfer["nbrImages"] = len([url for url in final_urls if url != "N/A"])
     annonce_to_transfer["scraped_at"] = datetime.utcnow()
     annonce_to_transfer["processed"] = True
     annonce_to_transfer["processed_at"] = datetime.utcnow()
-    if "_id" in annonce_to_transfer:
-        del annonce_to_transfer["_id"]
 
     if existing:
-        # Mettre à jour l'existant
         await dest_collection.update_one(
             {"idSec": annonce_id},
             {"$set": {
                 "images": final_urls,
                 "nbrImages": annonce_to_transfer["nbrImages"],
+                "idAgence": id_agence,
                 "scraped_at": annonce_to_transfer["scraped_at"],
                 "processed": True,
                 "processed_at": annonce_to_transfer["processed_at"]
             }}
         )
-        logger.info(f"✅ Annonce {annonce_id} mise à jour dans realStateFinale avec nouvelles images.")
+        logger.info(f"✅ Annonce {annonce_id} mise à jour dans realStateFinale avec idAgence {id_agence}.")
     else:
-        # Insérer une nouvelle annonce
+        annonce_to_transfer["_id"] = annonce.get("_id")  # Conserver l'_id original si présent
         await dest_collection.insert_one(annonce_to_transfer)
-        logger.info(f"✅ Annonce {annonce_id} transférée avec succès dans realStateFinale.")
+        logger.info(f"✅ Annonce {annonce_id} transférée dans realStateFinale avec idAgence {id_agence}.")
 
     return {"idSec": annonce_id, "images": final_urls, "skipped": False}
+
+async def check_image_url(url: str) -> bool:
+    """Check if an image URL is accessible."""
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.head(url, timeout=5) as response:
+                return response.status == 200
+        except Exception:
+            return False

@@ -34,7 +34,7 @@ async def get_attr_by_label(ad: dict, label: str, default=None, get_values: bool
             return attr.get("values_label" if get_values else "value_label", default) or default
     return default
 
-async def process_ad(ad: dict) -> None:
+async def process_ad(ad: dict) -> bool:
     global total_scraped
     annonce_id = str(ad.get("list_id"))
     title = ad.get("subject")
@@ -43,15 +43,43 @@ async def process_ad(ad: dict) -> None:
     # Vérifier l'existence avec idSec, title et price
     if await annonce_exists_by_unique_key(annonce_id, title, price):
         logger.info(f"⏭ Annonce {annonce_id} déjà existante (idSec, title, price).")
-        return
+        return True  # Retourne True si l'annonce existe déjà
 
     logger.debug(f"📋 Traitement de l'annonce {annonce_id}...")
     store_name = await get_attr_by_label(ad, "store_name")
     storeId = await get_attr_by_label(ad, "online_store_id")
     store_logo = await get_attr_by_label(ad, "store_logo")
-    idAgence = await get_or_create_agence(storeId, store_name, store_logo) if storeId and store_name else None
-    if idAgence:
-        idAgence = str(idAgence)
+
+    # Gestion de l'agence
+    idAgence = None
+    if storeId and store_name:
+        # Vérifier ou créer l'agence avec storeId, name et lien pour éviter les doublons
+        lien = f"https://www.leboncoin.fr/boutique/{storeId}"
+        source_db = get_source_db()
+        agences_collection = source_db["agencesBrute"]
+        existing_agence = await agences_collection.find_one({"storeId": storeId, "name": store_name, "lien": lien})
+        if existing_agence:
+            idAgence = str(existing_agence["_id"])
+            logger.info(f"ℹ️ Agence {storeId} ({store_name}) trouvée avec _id: {idAgence}")
+        else:
+            agence_data = {
+                "storeId": storeId,
+                "name": store_name,
+                "lien": lien,
+                "CodeSiren": None,
+                "logo": store_logo,
+                "adresse": None,
+                "zone_intervention": None,
+                "siteWeb": None,
+                "horaires": None,
+                "number": None,
+                "description": None,
+                "scraped": False,  # Marquer comme non scrapé pour traitement ultérieur
+                "scraped_at": None
+            }
+            result = await agences_collection.insert_one(agence_data)
+            idAgence = str(result.inserted_id)
+            logger.info(f"✅ Agence {storeId} créée avec _id: {idAgence}")
 
     annonce_data = RealState(
         idSec=annonce_id,
@@ -104,26 +132,18 @@ async def process_ad(ad: dict) -> None:
         scraped_at=datetime.utcnow()
     )
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            await save_annonce_to_db(annonce_data)
-            total_scraped += 1
-            logger.info(f"✅ Annonce enregistrée dans realState : {annonce_id} - Total extrait : {total_scraped}")
-            if idAgence:
-                source_db = get_source_db()
-                await source_db["realStateWithAgence"].insert_one(annonce_data.dict())
-                logger.info(f"✅ Annonce {annonce_id} avec idAgence {idAgence} enregistrée dans realStateWithAgence")
-            break
-        except pymongo.errors.OperationFailure as e:
-            logger.error(f"❌ Erreur MongoDB lors de l'enregistrement de {annonce_id} (tentative {attempt + 1}/{max_retries}) : {e.details}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(random.uniform(2, 5))
-            else:
-                raise
-        except Exception as e:
-            logger.error(f"❌ Erreur inattendue lors de l'enregistrement de {annonce_id} : {e}")
-            raise
+    try:
+        await save_annonce_to_db(annonce_data)
+        total_scraped += 1
+        logger.info(f"✅ Annonce enregistrée dans realState : {annonce_id} - Total extrait : {total_scraped}")
+        if idAgence:
+            source_db = get_source_db()
+            await source_db["realStateWithAgence"].insert_one(annonce_data.dict())
+            logger.info(f"✅ Annonce {annonce_id} avec idAgence {idAgence} enregistrée dans realStateWithAgence")
+        return False  # Nouvelle annonce
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de l'enregistrement de {annonce_id} : {e}")
+        return False
 
 # Le reste du code reste inchangé (get_latest_valid_api_response, handle_no_results, scrape_listings_via_api)
 async def get_latest_valid_api_response(api_responses: list) -> dict | None:

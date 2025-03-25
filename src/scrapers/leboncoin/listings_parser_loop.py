@@ -48,9 +48,37 @@ async def process_ad(ad: dict) -> bool:
     store_name = await get_attr_by_label(ad, "store_name")
     storeId = await get_attr_by_label(ad, "online_store_id")
     store_logo = await get_attr_by_label(ad, "store_logo")
-    idAgence = await get_or_create_agence(storeId, store_name, store_logo) if storeId and store_name else None
-    if idAgence:
-        idAgence = str(idAgence)
+
+    # Gestion de l'agence
+    idAgence = None
+    if storeId and store_name:
+        # Vérifier ou créer l'agence avec storeId, name et lien pour éviter les doublons
+        lien = f"https://www.leboncoin.fr/boutique/{storeId}"
+        source_db = get_source_db()
+        agences_collection = source_db["agencesBrute"]
+        existing_agence = await agences_collection.find_one({"storeId": storeId, "name": store_name, "lien": lien})
+        if existing_agence:
+            idAgence = str(existing_agence["_id"])
+            logger.info(f"ℹ️ Agence {storeId} ({store_name}) trouvée avec _id: {idAgence}")
+        else:
+            agence_data = {
+                "storeId": storeId,
+                "name": store_name,
+                "lien": lien,
+                "CodeSiren": None,
+                "logo": store_logo,
+                "adresse": None,
+                "zone_intervention": None,
+                "siteWeb": None,
+                "horaires": None,
+                "number": None,
+                "description": None,
+                "scraped": False,  # Marquer comme non scrapé pour traitement ultérieur
+                "scraped_at": None
+            }
+            result = await agences_collection.insert_one(agence_data)
+            idAgence = str(result.inserted_id)
+            logger.info(f"✅ Agence {storeId} créée avec _id: {idAgence}")
 
     annonce_data = RealState(
         idSec=annonce_id,
