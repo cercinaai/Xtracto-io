@@ -7,6 +7,7 @@ destination_client = None
 source_db = None
 destination_db = None
 
+
 async def init_db():
     global source_client, destination_client, source_db, destination_db
     try:
