@@ -74,6 +74,58 @@ class RealState(BaseModel):
     class Config:
         extra = "ignore"
 
+async def save_annonce_to_db(annonce: RealState) -> bool:
+    db = get_source_db()
+    collection = db["realState"]
+    if await annonce_exists_by_unique_key(annonce.idSec, annonce.title, annonce.price):
+        return False
+    annonce_dict = annonce.dict(exclude_unset=True)
+    result = await collection.insert_one(annonce_dict)
+    return True
+
+async def annonce_exists(annonce_id: str) -> bool:
+    db = get_source_db()
+    collection = db["realState"]
+    return await collection.find_one({"idSec": annonce_id}) is not None
+
+async def annonce_exists_by_unique_key(idSec: str, title: str, price: float) -> bool:
+    db = get_source_db()
+    collection = db["realState"]
+    query = {"idSec": idSec, "title": title, "price": price}
+    return await collection.find_one(query) is not None
+
+async def update_annonce_images(annonce_id: str, images: List[str], nbrImages: int) -> bool:
+    db = get_source_db()
+    collection = db["realState"]
+    result = await collection.update_one(
+        {"idSec": annonce_id},
+        {"$set": {"images": images, "nbrImages": nbrImages, "scraped_at": datetime.utcnow()}}
+    )
+    return result.modified_count > 0
+
+async def transfer_annonce(annonce: Dict) -> bool:
+    source_db = get_source_db()
+    dest_db = get_destination_db()
+    source_collection = source_db["realState"]
+    dest_collection = dest_db["realState"]
+    existing = await dest_collection.find_one({"idSec": annonce["idSec"], "title": annonce["title"], "price": annonce["price"]})
+    if existing:
+        update_data = {}
+        for key, value in annonce.items():
+            if key != "_id" and (key not in existing or existing[key] is None):
+                update_data[key] = value
+        if update_data:
+            result = await dest_collection.update_one(
+                {"idSec": annonce["idSec"], "title": annonce["title"], "price": annonce["price"]},
+                {"$set": update_data}
+            )
+            if result.modified_count > 0:
+                return True
+        return False
+    else:
+        await dest_collection.insert_one(annonce)
+        return True
+
 async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
     source_db = get_source_db()
     dest_db = get_destination_db()
