@@ -10,8 +10,22 @@ import asyncio
 from datetime import datetime
 from src.api.cron import running_tasks, cleanup_task
 from src.api.transfer_agencies import transfer_agencies  
+from pymongo import MongoClient
+from bson.objectid import ObjectId
+from pydantic import BaseModel
 
 api_router = APIRouter()
+
+# Configuration MongoDB (à adapter selon ton projet)
+client = MongoClient("mongodb://admin:SuperSecureP%40ssw0rd!@127.0.0.1:27017/xtracto-io-prod?authSource=admin")
+db = client["xtracto-io-prod"]
+collection = db["agences"]  # Collection pour GET
+agences_finale_collection = db["agencesFinale"]  # Collection pour PUT
+
+# Modèle pour la mise à jour des agences
+class AgencyUpdate(BaseModel):
+    email: str | None = None
+    number: str | None = None
 
 def run_in_process(queue: Queue, func, task_name: str):
     """Exécute une fonction asynchrone dans un processus séparé."""
@@ -131,3 +145,47 @@ async def get_task_status():
 async def health_check():
     """Vérifie la santé globale de l'API."""
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+# Nouvelle API pour récupérer les agences (collection "agences")
+@api_router.get("/api/v1/agencies/all")
+async def get_agencies(page: int = 1, limit: int = 10):
+    try:
+        skip = (page - 1) * limit
+        total_agencies = collection.count_documents({})
+        agencies = list(collection.find().skip(skip).limit(limit))
+        response_agencies = [
+            {
+                "id": str(agency["_id"]),  # Convertir ObjectId en str pour la réponse
+                "name": agency.get("name", ""),
+                "email": agency.get("email", ""),
+                "number": agency.get("number", ""),
+                "lien": agency.get("lien", "")
+            }
+            for agency in agencies
+        ]
+        return {"agencies": response_agencies, "total_agencies": total_agencies}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+
+# Nouvelle API pour mettre à jour une agence dans "agencesFinale"
+@api_router.put("/api/v1/agencies/{agency_id}")
+async def update_agency(agency_id: str, update: AgencyUpdate):
+    try:
+        # Convertir la chaîne agency_id en ObjectId
+        agency_object_id = ObjectId(agency_id)
+        update_data = {k: v for k, v in update.dict().items() if v is not None}
+        if not update_data:
+            raise HTTPException(status_code=400, detail="Aucune donnée à mettre à jour")
+
+        result = agences_finale_collection.update_one(
+            {"_id": agency_object_id},  # Utiliser ObjectId ici
+            {"$set": update_data}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Agence non trouvée")
+        return {"message": "Mise à jour réussie"}
+    except ValueError as e:
+        # Si agency_id n'est pas un ObjectId valide
+        raise HTTPException(status_code=400, detail=f"ID invalide : {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
