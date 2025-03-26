@@ -8,7 +8,7 @@ from src.scrapers.leboncoin.leboncoinLoopScrapper import open_leboncoin_loop
 from src.scrapers.leboncoin.agenceBrute_scraper import scrape_agences
 from src.scrapers.leboncoin.agence_notexisting import scrape_annonce_agences
 from src.scrapers.leboncoin.image_processor import process_and_transfer_images
-from transfer_agencies import transfer_agencies  # Importer la fonction
+from src.api.transfer_agencies import transfer_agencies  
 from src.config.browserConfig import cleanup_browser
 
 logger = logging.getLogger(__name__)
