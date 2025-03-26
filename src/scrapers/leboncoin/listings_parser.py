@@ -6,8 +6,7 @@ from src.scrapers.leboncoin.utils.human_behavorScrapperLbc import (
     human_like_exploration, simulate_reading
 )
 from src.database.realState import RealState, annonce_exists_by_unique_key, save_annonce_to_db
-from src.database.agence import get_or_create_agence
-from src.database.database import get_source_db
+from src.database.database import get_source_db, get_destination_db
 from datetime import datetime
 import random
 import asyncio
@@ -53,33 +52,43 @@ async def process_ad(ad: dict) -> bool:
     # Gestion de l'agence
     idAgence = None
     if storeId and store_name:
-        # Vérifier ou créer l'agence avec storeId, name et lien pour éviter les doublons
         lien = f"https://www.leboncoin.fr/boutique/{storeId}"
         source_db = get_source_db()
-        agences_collection = source_db["agencesBrute"]
-        existing_agence = await agences_collection.find_one({"storeId": storeId, "name": store_name, "lien": lien})
-        if existing_agence:
-            idAgence = str(existing_agence["_id"])
-            logger.info(f"ℹ️ Agence {storeId} ({store_name}) trouvée avec _id: {idAgence}")
+        dest_db = get_destination_db()
+        agences_finale_collection = dest_db["agencesFinale"]
+        agences_brute_collection = source_db["agencesBrute"]
+
+        # Vérifier d'abord dans agencesFinale
+        existing_finale = await agences_finale_collection.find_one({"storeId": storeId})
+        if existing_finale:
+            idAgence = str(existing_finale["_id"])
+            logger.info(f"ℹ️ Agence {storeId} ({store_name}) trouvée dans agencesFinale avec _id: {idAgence}")
         else:
-            agence_data = {
-                "storeId": storeId,
-                "name": store_name,
-                "lien": lien,
-                "CodeSiren": None,
-                "logo": store_logo,
-                "adresse": None,
-                "zone_intervention": None,
-                "siteWeb": None,
-                "horaires": None,
-                "number": None,
-                "description": None,
-                "scraped": False,  # Marquer comme non scrapé pour traitement ultérieur
-                "scraped_at": None
-            }
-            result = await agences_collection.insert_one(agence_data)
-            idAgence = str(result.inserted_id)
-            logger.info(f"✅ Agence {storeId} créée avec _id: {idAgence}")
+            # Vérifier ensuite dans agencesBrute
+            existing_brute = await agences_brute_collection.find_one({"storeId": storeId})
+            if existing_brute:
+                idAgence = str(existing_brute["_id"])
+                logger.info(f"ℹ️ Agence {storeId} ({store_name}) trouvée dans agencesBrute avec _id: {idAgence}")
+            else:
+                # Créer une nouvelle agence dans agencesBrute
+                agence_data = {
+                    "storeId": storeId,
+                    "name": store_name,
+                    "lien": lien,
+                    "CodeSiren": None,
+                    "logo": store_logo,
+                    "adresse": None,
+                    "zone_intervention": None,
+                    "siteWeb": None,
+                    "horaires": None,
+                    "number": None,
+                    "description": None,
+                    "scraped": False,  # Marquer comme non scrapé pour traitement ultérieur
+                    "scraped_at": None
+                }
+                result = await agences_brute_collection.insert_one(agence_data)
+                idAgence = str(result.inserted_id)
+                logger.info(f"✅ Agence {storeId} créée dans agencesBrute avec _id: {idAgence}")
 
     annonce_data = RealState(
         idSec=annonce_id,
@@ -145,7 +154,7 @@ async def process_ad(ad: dict) -> bool:
         logger.error(f"❌ Erreur lors de l'enregistrement de {annonce_id} : {e}")
         return False
 
-# Le reste du code reste inchangé (get_latest_valid_api_response, handle_no_results, scrape_listings_via_api)
+# Le reste du code reste inchangé
 async def get_latest_valid_api_response(api_responses: list) -> dict | None:
     for response in reversed(api_responses):
         if "ads" in response and response["ads"]:

@@ -172,44 +172,44 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
 
     if id_agence:
         try:
-            # Conversion en ObjectId si idAgence est une chaîne valide
             object_id_agence = ObjectId(id_agence)
         except Exception:
-            object_id_agence = id_agence  # Garder tel quel si ce n'est pas un ObjectId valide
+            object_id_agence = id_agence
 
         agence_exists = await dest_db["agencesFinale"].find_one({"_id": object_id_agence})
         if not agence_exists:
-            # Si non trouvé dans agencesFinale, vérifier dans agencesBrute
             agence_exists_in_brute = await source_db["agencesBrute"].find_one({"_id": object_id_agence})
             if not agence_exists_in_brute:
-                logger.warning(f"Annonce {annonce_id} a un idAgence {id_agence} non trouvé dans agencesFinale ni dans agencesBrute par _id.")
-                # Recherche par nom si disponible
-                if agence_name:
-                    agence_by_name_finale = await dest_db["agencesFinale"].find_one({"name": agence_name})
-                    if agence_by_name_finale:
-                        final_id_agence = str(agence_by_name_finale["_id"])
-                        logger.info(f"✅ Agence trouvée par nom '{agence_name}' dans agencesFinale avec _id {final_id_agence} pour {annonce_id}.")
-                    else:
-                        agence_by_name_brute = await source_db["agencesBrute"].find_one({"name": agence_name})
-                        if agence_by_name_brute:
-                            final_id_agence = str(agence_by_name_brute["_id"])
-                            logger.info(f"✅ Agence trouvée par nom '{agence_name}' dans agencesBrute avec _id {final_id_agence} pour {annonce_id}.")
-                        else:
-                            logger.warning(f"⚠️ Aucune agence trouvée pour le nom '{agence_name}' dans agencesFinale ni agencesBrute pour {annonce_id}.")
-                            return {"idSec": annonce_id, "images": final_urls, "skipped": True}
+                if agence_name and annonce.get("storeId"):
+                    # Créer une nouvelle agence dans agencesBrute
+                    agence_data = {
+                        "storeId": annonce.get("storeId"),
+                        "name": agence_name,
+                        "lien": f"https://www.leboncoin.fr/boutique/{annonce.get('storeId')}",
+                        "CodeSiren": None,
+                        "logo": None,
+                        "adresse": None,
+                        "zone_intervention": None,
+                        "siteWeb": None,
+                        "horaires": None,
+                        "number": None,
+                        "description": None,
+                        "scraped": False,
+                        "scraped_at": None
+                    }
+                    result = await source_db["agencesBrute"].insert_one(agence_data)
+                    final_id_agence = str(result.inserted_id)
+                    logger.info(f"✅ Nouvelle agence créée dans agencesBrute pour {annonce_id} avec _id: {final_id_agence}")
                 else:
-                    logger.warning(f"⚠️ Aucun nom d'agence disponible pour vérifier davantage pour {annonce_id}.")
+                    logger.warning(f"⚠️ Pas assez d'infos (storeId ou name) pour créer une agence pour {annonce_id}.")
                     return {"idSec": annonce_id, "images": final_urls, "skipped": True}
             else:
-                logger.info(f"Annonce {annonce_id} a un idAgence {id_agence} trouvé dans agencesBrute mais pas dans agencesFinale.")
-                # Transférer l'agence de agencesBrute à agencesFinale si nécessaire
                 await dest_db["agencesFinale"].update_one(
                     {"_id": object_id_agence},
                     {"$set": agence_exists_in_brute},
                     upsert=True
                 )
                 logger.info(f"✅ Agence {id_agence} transférée de agencesBrute à agencesFinale.")
-        # Si trouvé dans agencesFinale ou agencesBrute, on continue le traitement
     else:
         logger.debug(f"Annonce {annonce_id} n'a pas d'idAgence.")
         return {"idSec": annonce_id, "images": final_urls, "skipped": True}

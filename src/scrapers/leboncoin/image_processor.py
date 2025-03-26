@@ -6,7 +6,7 @@ from src.database.realState import transfer_from_withagence_to_finale
 
 logger = logging.getLogger(__name__)
 
-async def process_and_transfer_images(instances: int = 5) -> None:
+async def process_and_transfer_images(instances: int = 10) -> None:
     """Traite et transfère les annonces en continu avec plusieurs instances."""
     logger.info(f"🚀 Début du traitement continu des images avec {instances} instances...")
     try:

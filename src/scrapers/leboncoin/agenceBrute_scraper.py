@@ -142,11 +142,10 @@ async def scrape_agences(queue):
             await asyncio.sleep(3600)  # Attendre 1 heure avant de vérifier à nouveau
             continue
 
-        finale_ids = await agences_finale_collection.distinct("idAgence")
+        finale_ids = await agences_finale_collection.distinct("storeId")  # Utiliser storeId ici
         agences = await agences_brute_collection.find({
             "scraped": {"$ne": True},
             "$or": [
-                {"idAgence": {"$nin": finale_ids}},
                 {"storeId": {"$nin": finale_ids}}
             ]
         }).to_list(length=None)
@@ -188,9 +187,10 @@ async def scrape_agences(queue):
                     browser = context = client = profile_id = playwright = None
                     break
 
-                store_id = agence.get("idAgence") or agence.get("storeId")
+                store_id = agence.get("storeId")
+                original_id = agence.get("_id")
                 if not store_id:
-                    logger.error(f"❌ Aucune clé 'idAgence' ou 'storeId' trouvée pour l'agence {agence.get('_id')}")
+                    logger.error(f"❌ Aucune clé 'storeId' trouvée pour l'agence {original_id}")
                     remaining_agences -= 1
                     continue
 
@@ -208,18 +208,18 @@ async def scrape_agences(queue):
                             raise Exception("CAPTCHA failure")
 
                     update_data = await scrape_agence_details(agence_page, store_id, lien)
+                    # Mettre à jour agencesBrute
                     await agences_brute_collection.update_one(
-                        {"_id": agence["_id"]},
-                        {"$set": {**update_data, "idAgence": store_id}, "$unset": {"storeId": ""}}
+                        {"_id": original_id},
+                        {"$set": update_data}
                     )
-                    agence_data = await agences_brute_collection.find_one({"idAgence": store_id})
-                    await agences_finale_collection.update_one(
-                        {"idAgence": store_id},
-                        {"$set": agence_data},
-                        upsert=True
-                    )
-                    updated_agences.append({"idAgence": store_id, "name": agence.get("name"), **update_data})
-                    logger.info(f"✅ Agence {store_id} scrapée et transférée")
+                    # Transférer ou mettre à jour dans agencesFinale avec l'_id original
+                    agence_data = await agences_brute_collection.find_one({"_id": original_id})
+                    agence_data["_id"] = original_id  # Conserver l'_id original
+                    await agences_finale_collection.delete_one({"storeId": store_id})  # Supprimer si existant
+                    await agences_finale_collection.insert_one(agence_data)
+                    updated_agences.append({"storeId": store_id, "name": agence.get("name"), "_id": str(original_id), **update_data})
+                    logger.info(f"✅ Agence {store_id} scrapée et transférée avec _id: {original_id}")
                 except Exception as e:
                     if "CAPTCHA failure" not in str(e):
                         logger.error(f"⚠️ Erreur lors du scraping de l’agence {store_id} : {e}")

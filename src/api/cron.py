@@ -8,6 +8,7 @@ from src.scrapers.leboncoin.leboncoinLoopScrapper import open_leboncoin_loop
 from src.scrapers.leboncoin.agenceBrute_scraper import scrape_agences
 from src.scrapers.leboncoin.agence_notexisting import scrape_annonce_agences
 from src.scrapers.leboncoin.image_processor import process_and_transfer_images
+from transfer_agencies import transfer_agencies  # Importer la fonction
 from src.config.browserConfig import cleanup_browser
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ class TaskState:
         self.last_run = None
 
 running_tasks = {
+    "transfer_agencies": TaskState(),  # Ajout de transfer_agencies
     "first_scraper": TaskState(),
     "loop_scraper": TaskState(),
     "agence_brute": TaskState(),
@@ -43,6 +45,29 @@ async def cleanup_task(task_name):
         await cleanup_browser(state.client, state.profile_id, state.playwright, state.browser)
         state.browser = state.context = state.client = state.profile_id = state.playwright = None
     state.running = False
+
+async def transfer_agencies_task():
+    state = running_tasks["transfer_agencies"]
+    logger.info("🚀 Initialisation de transfer_agencies_task...")
+    while True:
+        try:
+            if not state.running:
+                logger.info("▶️ Lancement de transfer_agencies...")
+                state.running = True
+                result = transfer_agencies()  # Appel direct car non async
+                state.last_run = datetime.now()
+                logger.info(f"📥 Résultat de transfer_agencies: {result}")
+                if result["status"] == "error":
+                    logger.error(f"⚠️ Erreur dans transfer_agencies: {result['message']}")
+                # Attendre un certain temps avant de relancer (ex. toutes les 24h)
+                await asyncio.sleep(86400)  # 24 heures
+            else:
+                logger.info("⏳ transfer_agencies déjà en cours, attente avant prochaine exécution...")
+                await asyncio.sleep(60)
+        except Exception as e:
+            logger.error(f"⚠️ Erreur dans transfer_agencies_task: {e}")
+            state.running = False
+            await asyncio.sleep(60)
 
 async def first_scraper_task():
     state = running_tasks["first_scraper"]
@@ -178,6 +203,12 @@ async def process_images_task():
 async def start_cron():
     logger.info("🚀 Démarrage des tâches cron...")
     await init_db()
+    
+    # Lancer transfer_agencies en premier
+    running_tasks["transfer_agencies"].task = asyncio.create_task(transfer_agencies_task())
+    logger.info("✅ Tâche transfer_agencies planifiée en premier.")
+    
+    # Lancer les autres tâches ensuite
     running_tasks["first_scraper"].task = asyncio.create_task(first_scraper_task())
     running_tasks["loop_scraper"].task = asyncio.create_task(loop_scraper_task())
     running_tasks["agence_brute"].task = asyncio.create_task(agence_brute_task())

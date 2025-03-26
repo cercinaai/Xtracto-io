@@ -210,62 +210,38 @@ async def scrape_annonce_agences(queue):
                         store_id = agence_link.split("/boutique/")[1].split("/")[0]
                         logger.info(f"🔗 Lien d'agence trouvé : {agence_link}, store_id : {store_id}")
 
-                        existing_agence = await agences_brute_collection.find_one({"storeId": store_id, "name": agence_name, "lien": agence_link})
-                        if existing_agence:
-                            idAgence = str(existing_agence["_id"])
-                            logger.info(f"ℹ️ Agence {store_id} trouvée avec _id: {idAgence}")
+                        # Vérifier si l'agence existe dans agencesFinale
+                        existing_finale_agence = await agences_finale_collection.find_one({"storeId": store_id})
+                        if existing_finale_agence:
+                            idAgence = str(existing_finale_agence["_id"])
+                            logger.info(f"ℹ️ Agence {store_id} trouvée dans agencesFinale avec _id: {idAgence}")
                         else:
-                            agence_data = {
-                                "storeId": store_id,
-                                "name": agence_name,
-                                "lien": agence_link,
-                                "CodeSiren": None,
-                                "logo": None,
-                                "adresse": None,
-                                "zone_intervention": None,
-                                "siteWeb": None,
-                                "horaires": None,
-                                "number": None,
-                                "description": None,
-                                "scraped": False,
-                                "scraped_at": None
-                            }
-                            result = await agences_brute_collection.insert_one(agence_data)
-                            idAgence = str(result.inserted_id)
-                            logger.info(f"✅ Agence {store_id} créée avec _id: {idAgence}")
+                            # Scraper les détails et créer directement dans agencesFinale
+                            agence_page = await context.new_page()
+                            try:
+                                full_agence_url = f"https://www.leboncoin.fr{agence_link}"
+                                await agence_page.goto(full_agence_url, timeout=60000)
+                                await human_like_delay_search(1, 3)
 
-                        agence_page = await context.new_page()
-                        try:
-                            full_agence_url = f"https://www.leboncoin.fr{agence_link}"
-                            await agence_page.goto(full_agence_url, timeout=60000)
-                            await human_like_delay_search(1, 3)
+                                if await agence_page.locator('iframe[title="DataDome CAPTCHA"]').is_visible(timeout=5000):
+                                    if not await solve_audio_captcha(agence_page):
+                                        logger.error(f"❌ Échec de la résolution du CAPTCHA pour l’agence {store_id}.")
+                                        raise Exception("CAPTCHA failure")
 
-                            if await agence_page.locator('iframe[title="DataDome CAPTCHA"]').is_visible(timeout=5000):
-                                if not await solve_audio_captcha(agence_page):
-                                    logger.error(f"❌ Échec de la résolution du CAPTCHA pour l’agence {store_id}.")
-                                    raise Exception("CAPTCHA failure")
+                                update_data = await scrape_agence_details(agence_page, store_id, full_agence_url)
+                                agence_data = {
+                                    "storeId": store_id,
+                                    "name": agence_name,
+                                    "lien": full_agence_url,
+                                    **update_data
+                                }
+                                result = await agences_finale_collection.insert_one(agence_data)
+                                idAgence = str(result.inserted_id)
+                                logger.info(f"✅ Agence {store_id} créée directement dans agencesFinale avec _id: {idAgence}")
+                            finally:
+                                await agence_page.close()
 
-                            update_data = await scrape_agence_details(agence_page, store_id, full_agence_url)
-                            agence_data = {
-                                "storeId": store_id,
-                                "name": agence_name,
-                                "lien": full_agence_url,
-                                **update_data
-                            }
-                            await agences_brute_collection.update_one(
-                                {"_id": result.inserted_id if not existing_agence else existing_agence["_id"]},
-                                {"$set": agence_data},
-                                upsert=True
-                            )
-                            await agences_finale_collection.update_one(
-                                {"storeId": store_id},
-                                {"$set": agence_data},
-                                upsert=True
-                            )
-                            logger.info(f"✅ Agence {store_id} mise à jour dans agencesBrute et agencesFinale")
-                        finally:
-                            await agence_page.close()
-
+                        # Associer l'agence à l'annonce
                         annonce["idAgence"] = idAgence
                         annonce["processed"] = False
                         annonce["scraped_at"] = datetime.utcnow()

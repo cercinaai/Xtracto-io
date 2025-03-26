@@ -29,7 +29,7 @@ async def transfer_agence(storeId: str, name: Optional[str] = None) -> Optional[
 
     agence_source = await source_collection.find_one({"storeId": storeId, "name": name})
     if not agence_source:
-        logger.warning(f"⚠️ Agence {storeId} non trouvée dans agencesBrute. Création minimale.")
+        logger.warning(f"⚠️ Agence {storeId} non trouvée dans agencesBrute. Création dans agencesBrute.")
         agence_source = {
             "storeId": storeId,
             "name": name if name else f"Agence {storeId}",
@@ -45,20 +45,18 @@ async def transfer_agence(storeId: str, name: Optional[str] = None) -> Optional[
             "scraped": False,
             "scraped_at": None
         }
-        result = await dest_collection.insert_one(agence_source)
-        logger.info(f"✅ Agence {storeId} créée dans agencesFinale avec _id: {result.inserted_id}")
+        result = await source_collection.insert_one(agence_source)
+        logger.info(f"✅ Agence {storeId} créée dans agencesBrute avec _id: {result.inserted_id}")
         return str(result.inserted_id)
 
-    # Conserver l'_id original
     agence_source_id = agence_source["_id"]
     agence_data = agence_source.copy()
-    del agence_data["_id"]  # Supprimer temporairement pour éviter conflit
+    del agence_data["_id"]
     await dest_collection.update_one(
         {"storeId": storeId, "name": name},
         {"$set": agence_data},
         upsert=True
     )
-    # Restaurer l'_id original
     await dest_collection.update_one(
         {"storeId": storeId, "name": name},
         {"$set": {"_id": agence_source_id}}
