@@ -153,12 +153,12 @@ async def scrape_annonce_agences(queue):
 
         if total_annonces == 0:
             logger.info("ℹ️ Aucune annonce à traiter dans realState.")
-            await queue.put({"status": "success", "data": {"updated": [], "skipped": [], "total": 0, "remaining": 0}})
+            await queue.put({"status": "success", "data": {"updated": [], "deleted": [], "total": 0, "remaining": 0}})
             await asyncio.sleep(3600)  # Attendre 1 heure avant de recommencer
             continue
 
         updated_annonces = []
-        skipped_annonces = []
+        deleted_annonces = []  # Remplacer skipped_annonces par deleted_annonces
         remaining_annonces = total_annonces
         browser = context = client = profile_id = playwright = None
 
@@ -253,13 +253,10 @@ async def scrape_annonce_agences(queue):
                         updated_annonces.append({"idSec": annonce_id, "idAgence": idAgence})
                         logger.info(f"✅ Annonce {annonce_id} transférée dans realStateWithAgence avec idAgence {idAgence}")
                     else:
-                        logger.warning(f"⚠️ Aucun lien d’agence trouvé pour l’annonce {annonce_id}.")
-                        await realstate_collection.update_one(
-                            {"idSec": annonce_id},
-                            {"$set": {"noAgenceFound": True, "scraped_at": datetime.utcnow()}}
-                        )
-                        skipped_annonces.append(annonce_id)
-                        logger.info(f"✅ Annonce {annonce_id} marquée comme sans agence dans realState")
+                        logger.warning(f"⚠️ Aucun lien d’agence trouvé pour l’annonce {annonce_id}. Suppression de realState.")
+                        await realstate_collection.delete_one({"idSec": annonce_id})
+                        deleted_annonces.append(annonce_id)
+                        logger.info(f"🗑️ Annonce {annonce_id} supprimée de realState car sans agence.")
 
                 except Exception as e:
                     if "CAPTCHA failure" not in str(e):
@@ -269,8 +266,8 @@ async def scrape_annonce_agences(queue):
                 remaining_annonces -= 1
 
             if browser:  # Si le navigateur est encore ouvert après la boucle
-                logger.info(f"🏁 Scraping terminé - Total : {total_annonces}, mises à jour : {len(updated_annonces)}, skippées : {len(skipped_annonces)}")
-                await queue.put({"status": "success", "data": {"updated": updated_annonces, "skipped": skipped_annonces, "total": total_annonces, "remaining": remaining_annonces}})
+                logger.info(f"🏁 Scraping terminé - Total : {total_annonces}, mises à jour : {len(updated_annonces)}, supprimées : {len(deleted_annonces)}")
+                await queue.put({"status": "success", "data": {"updated": updated_annonces, "deleted": deleted_annonces, "total": total_annonces, "remaining": remaining_annonces}})
                 await cleanup_browser(client, profile_id, playwright, browser)
 
         except Exception as e:

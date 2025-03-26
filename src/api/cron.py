@@ -54,11 +54,12 @@ async def transfer_agencies_task():
             if not state.running:
                 logger.info("▶️ Lancement de transfer_agencies...")
                 state.running = True
-                result = transfer_agencies()  # Appel direct car non async
+                result = await transfer_agencies()  # Appel asynchrone avec await
                 state.last_run = datetime.now()
                 logger.info(f"📥 Résultat de transfer_agencies: {result}")
                 if result["status"] == "error":
                     logger.error(f"⚠️ Erreur dans transfer_agencies: {result['message']}")
+                state.running = False  # Réinitialiser après exécution
                 # Attendre un certain temps avant de relancer (ex. toutes les 24h)
                 await asyncio.sleep(86400)  # 24 heures
             else:
