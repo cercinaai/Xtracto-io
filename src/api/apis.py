@@ -110,10 +110,10 @@ async def monitor_queue(queue: Queue, task_name: str):
             break
         await asyncio.sleep(1)
 
-@api_router.get("/transfer/agences")
-async def transfer_agencies_endpoint(background_tasks: BackgroundTasks):
-    """Lance le transfert des agences vers agencesFinale."""
-    return await run_scraper_task(Queue(), transfer_agencies, "transfer_agencies", background_tasks)
+# @api_router.get("/transfer/agences")
+# async def transfer_agencies_endpoint(background_tasks: BackgroundTasks):
+#     """Lance le transfert des agences vers agencesFinale."""
+#     return await run_scraper_task(Queue(), transfer_agencies, "transfer_agencies", background_tasks)
 
 @api_router.get("/status")
 async def get_task_status():
@@ -124,7 +124,7 @@ async def get_task_status():
         "agence_brute": "running" if running_tasks["agence_brute"].running else "idle",
         "agence_notexisting": "running" if running_tasks["agence_notexisting"].running else "idle",
         "process_and_transfer": "running" if running_tasks["process_and_transfer"].running else "idle",
-        "transfer_agencies": "running" if running_tasks["transfer_agencies"].running else "idle"
+        # "transfer_agencies": "running" if running_tasks["transfer_agencies"].running else "idle"
     }
 
 @api_router.get("/health")
