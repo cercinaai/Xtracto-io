@@ -124,7 +124,7 @@ async def get_task_status():
         "agence_brute": "running" if running_tasks["agence_brute"].running else "idle",
         "agence_notexisting": "running" if running_tasks["agence_notexisting"].running else "idle",
         "process_and_transfer": "running" if running_tasks["process_and_transfer"].running else "idle",
-        # "transfer_agencies": "running" if running_tasks["transfer_agencies"].running else "idle"
+        # # "transfer_agencies": "running" if running_tasks["transfer_agencies"].running else "idle"
     }
 
 @api_router.get("/health")
