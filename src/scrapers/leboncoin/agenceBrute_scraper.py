@@ -125,29 +125,29 @@ async def scrape_agence_details(page: Page, store_id: str, lien: str) -> dict:
     return update_data
 
 async def scrape_agences(queue):
-    """Scrape les agences de la collection agencesBrute qui ne sont pas dans agencesFinale."""
     logger.info("🚀 Démarrage du scraping des agences dans agencesBrute...")
     source_db = get_source_db()
     dest_db = get_destination_db()
     agences_brute_collection = source_db["agencesBrute"]
     agences_finale_collection = dest_db["agencesFinale"]
 
+    def calculate_completeness(data: dict) -> int:
+        fields = ["CodeSiren", "logo", "adresse", "zone_intervention", "siteWeb", "horaires", "number", "description"]
+        return sum(1 for field in fields if data.get(field) not in [None, "Non trouvé", ""])
+
     while True:
         current_hour = datetime.now().hour
         logger.info(f"⏰ Vérification horaire - Heure actuelle : {current_hour}h")
         
-        # Exécuter uniquement entre 22h et 10h
         if not (current_hour < 10 or current_hour >= 22):
             logger.info("⏹️ Arrêt temporaire du scraper (horaire diurne). Reprise à 22h.")
-            await asyncio.sleep(3600)  # Attendre 1 heure avant de vérifier à nouveau
+            await asyncio.sleep(3600)
             continue
 
-        finale_ids = await agences_finale_collection.distinct("storeId")  # Utiliser storeId ici
+        finale_store_ids = await agences_finale_collection.distinct("storeId")
         agences = await agences_brute_collection.find({
             "scraped": {"$ne": True},
-            "$or": [
-                {"storeId": {"$nin": finale_ids}}
-            ]
+            "storeId": {"$nin": finale_store_ids}
         }).to_list(length=None)
         total_agences = len(agences)
         logger.info(f"📊 Nombre total d'agences à scraper : {total_agences}")
@@ -155,7 +155,7 @@ async def scrape_agences(queue):
         if total_agences == 0:
             logger.info("ℹ️ Aucune agence à scraper dans agencesBrute ou toutes sont déjà dans agencesFinale.")
             await queue.put({"status": "success", "data": {"updated": [], "total": 0, "remaining": 0}})
-            await asyncio.sleep(3600)  # Attendre 1 heure avant de recommencer
+            await asyncio.sleep(3600)
             continue
 
         updated_agences = []
@@ -184,7 +184,6 @@ async def scrape_agences(queue):
                 if current_hour >= 10 and current_hour < 22:
                     logger.info("⏹️ Arrêt forcé à 10h du matin. Fermeture du navigateur.")
                     await cleanup_browser(client, profile_id, playwright, browser)
-                    browser = context = client = profile_id = playwright = None
                     break
 
                 store_id = agence.get("storeId")
@@ -208,18 +207,33 @@ async def scrape_agences(queue):
                             raise Exception("CAPTCHA failure")
 
                     update_data = await scrape_agence_details(agence_page, store_id, lien)
+                    agence_data = {**agence, **update_data}
+                    agence_data["_id"] = original_id
+
+                    # Vérifier si elle existe dans agencesFinale
+                    existing = await agences_finale_collection.find_one({"storeId": store_id})
+                    if existing:
+                        existing_completeness = calculate_completeness(existing)
+                        new_completeness = calculate_completeness(agence_data)
+                        if new_completeness > existing_completeness:
+                            await agences_finale_collection.update_one(
+                                {"storeId": store_id},
+                                {"$set": agence_data}
+                            )
+                            logger.info(f"✅ Agence {store_id} mise à jour dans agencesFinale avec _id: {original_id}")
+                        else:
+                            logger.info(f"ℹ️ Agence {store_id} déjà dans agencesFinale avec données plus complètes.")
+                    else:
+                        await agences_finale_collection.insert_one(agence_data)
+                        logger.info(f"✅ Agence {store_id} insérée dans agencesFinale avec _id: {original_id}")
+
                     # Mettre à jour agencesBrute
                     await agences_brute_collection.update_one(
                         {"_id": original_id},
                         {"$set": update_data}
                     )
-                    # Transférer ou mettre à jour dans agencesFinale avec l'_id original
-                    agence_data = await agences_brute_collection.find_one({"_id": original_id})
-                    agence_data["_id"] = original_id  # Conserver l'_id original
-                    await agences_finale_collection.delete_one({"storeId": store_id})  # Supprimer si existant
-                    await agences_finale_collection.insert_one(agence_data)
                     updated_agences.append({"storeId": store_id, "name": agence.get("name"), "_id": str(original_id), **update_data})
-                    logger.info(f"✅ Agence {store_id} scrapée et transférée avec _id: {original_id}")
+
                 except Exception as e:
                     if "CAPTCHA failure" not in str(e):
                         logger.error(f"⚠️ Erreur lors du scraping de l’agence {store_id} : {e}")
@@ -227,7 +241,7 @@ async def scrape_agences(queue):
                     await agence_page.close()
                 remaining_agences -= 1
 
-            if browser:  # Si le navigateur est encore ouvert après la boucle
+            if browser:
                 logger.info(f"🏁 Scraping terminé - Total agences traitées : {total_agences}, mises à jour : {len(updated_agences)}")
                 await queue.put({"status": "success", "data": {"updated": updated_agences, "total": total_agences, "remaining": remaining_agences}})
                 await cleanup_browser(client, profile_id, playwright, browser)
@@ -236,5 +250,5 @@ async def scrape_agences(queue):
             logger.error(f"⚠️ Erreur dans la session : {e}")
             if browser:
                 await cleanup_browser(client, profile_id, playwright, browser)
-            await asyncio.sleep(10)  # Attendre avant de relancer
+            await asyncio.sleep(10)
             continue

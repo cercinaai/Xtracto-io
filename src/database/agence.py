@@ -2,6 +2,7 @@ from pydantic import BaseModel
 from typing import Optional
 from loguru import logger
 from src.database.database import get_source_db, get_destination_db
+from datetime import datetime
 
 class AgenceModel(BaseModel):
     storeId: str
@@ -15,6 +16,13 @@ class AgenceModel(BaseModel):
     horaires: Optional[str] = None
     number: Optional[str] = None
     description: Optional[str] = None
+    scraped: Optional[bool] = False
+    scraped_at: Optional[datetime] = None
+
+def calculate_completeness(data: dict) -> int:
+    """Calcule un score de complétude basé sur les champs remplis."""
+    fields = ["CodeSiren", "logo", "adresse", "zone_intervention", "siteWeb", "horaires", "number", "description"]
+    return sum(1 for field in fields if data.get(field) not in [None, "Non trouvé", ""])
 
 async def transfer_agence(storeId: str, name: Optional[str] = None) -> Optional[str]:
     source_db = get_source_db()
@@ -22,12 +30,10 @@ async def transfer_agence(storeId: str, name: Optional[str] = None) -> Optional[
     source_collection = source_db["agencesBrute"]
     dest_collection = dest_db["agencesFinale"]
 
-    existing = await dest_collection.find_one({"storeId": storeId, "name": name})
-    if existing:
-        logger.info(f"ℹ️ Agence {storeId} ({name}) déjà présente dans agencesFinale avec _id: {existing['_id']}.")
-        return str(existing["_id"])
-
+    # Vérifier si l'agence existe déjà dans agencesFinale
+    existing = await dest_collection.find_one({"storeId": storeId})
     agence_source = await source_collection.find_one({"storeId": storeId, "name": name})
+
     if not agence_source:
         logger.warning(f"⚠️ Agence {storeId} non trouvée dans agencesBrute. Création dans agencesBrute.")
         agence_source = {
@@ -46,24 +52,41 @@ async def transfer_agence(storeId: str, name: Optional[str] = None) -> Optional[
             "scraped_at": None
         }
         result = await source_collection.insert_one(agence_source)
+        agence_source["_id"] = result.inserted_id
         logger.info(f"✅ Agence {storeId} créée dans agencesBrute avec _id: {result.inserted_id}")
-        return str(result.inserted_id)
 
-    agence_source_id = agence_source["_id"]
-    agence_data = agence_source.copy()
-    del agence_data["_id"]
-    await dest_collection.update_one(
-        {"storeId": storeId, "name": name},
-        {"$set": agence_data},
-        upsert=True
-    )
-    await dest_collection.update_one(
-        {"storeId": storeId, "name": name},
-        {"$set": {"_id": agence_source_id}}
-    )
-    logger.info(f"✅ Agence {storeId} transférée dans agencesFinale avec _id original: {agence_source_id}")
-    return str(agence_source_id)
+    # Si l'agence n'existe pas dans agencesFinale, insérer directement
+    if not existing:
+        agence_data = agence_source.copy()
+        agence_source_id = agence_data["_id"]
+        del agence_data["_id"]  # Supprimer _id temporairement pour l'insertion
+        result = await dest_collection.insert_one(agence_data)
+        await dest_collection.update_one({"_id": result.inserted_id}, {"$set": {"_id": agence_source_id}})
+        logger.info(f"✅ Agence {storeId} transférée dans agencesFinale avec _id: {agence_source_id}")
+        return str(agence_source_id)
 
+    # Si elle existe, comparer la complétude
+    existing_completeness = calculate_completeness(existing)
+    new_completeness = calculate_completeness(agence_source)
+
+    if new_completeness > existing_completeness:
+        # Mettre à jour uniquement si les nouvelles données sont plus complètes
+        agence_data = agence_source.copy()
+        agence_source_id = agence_data["_id"]
+        del agence_data["_id"]
+        await dest_collection.update_one(
+            {"storeId": storeId},
+            {"$set": agence_data}
+        )
+        await dest_collection.update_one(
+            {"storeId": storeId},
+            {"$set": {"_id": agence_source_id}}
+        )
+        logger.info(f"✅ Agence {storeId} mise à jour dans agencesFinale avec _id: {agence_source_id} (plus complète)")
+        return str(agence_source_id)
+    else:
+        logger.info(f"ℹ️ Agence {storeId} déjà présente dans agencesFinale avec _id: {existing['_id']} et plus complète.")
+        return str(existing["_id"])
 async def get_or_create_agence(store_id: str, store_name: str, store_logo: Optional[str] = None) -> str:
     source_db = get_source_db()
     agences_collection = source_db["agencesBrute"]

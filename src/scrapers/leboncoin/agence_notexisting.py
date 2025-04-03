@@ -130,17 +130,19 @@ async def scrape_annonce_agences(queue):
     dest_db = get_destination_db()
     realstate_collection = source_db["realState"]
     realstate_withagence_collection = source_db["realStateWithAgence"]
-    agences_brute_collection = source_db["agencesBrute"]
     agences_finale_collection = dest_db["agencesFinale"]
+
+    def calculate_completeness(data: dict) -> int:
+        fields = ["CodeSiren", "logo", "adresse", "zone_intervention", "siteWeb", "horaires", "number", "description"]
+        return sum(1 for field in fields if data.get(field) not in [None, "Non trouvé", ""])
 
     while True:
         current_hour = datetime.now().hour
         logger.info(f"⏰ Vérification horaire - Heure actuelle : {current_hour}h")
         
-        # Exécuter uniquement entre 22h et 10h
         if not (current_hour < 10 or current_hour >= 22):
             logger.info("⏹️ Arrêt temporaire du scraper (horaire diurne). Reprise à 22h.")
-            await asyncio.sleep(3600)  # Attendre 1 heure avant de vérifier à nouveau
+            await asyncio.sleep(3600)
             continue
 
         withagence_ids = await realstate_withagence_collection.distinct("idSec")
@@ -154,11 +156,11 @@ async def scrape_annonce_agences(queue):
         if total_annonces == 0:
             logger.info("ℹ️ Aucune annonce à traiter dans realState.")
             await queue.put({"status": "success", "data": {"updated": [], "deleted": [], "total": 0, "remaining": 0}})
-            await asyncio.sleep(3600)  # Attendre 1 heure avant de recommencer
+            await asyncio.sleep(3600)
             continue
 
         updated_annonces = []
-        deleted_annonces = []  # Remplacer skipped_annonces par deleted_annonces
+        deleted_annonces = []
         remaining_annonces = total_annonces
         browser = context = client = profile_id = playwright = None
 
@@ -184,7 +186,6 @@ async def scrape_annonce_agences(queue):
                 if current_hour >= 10 and current_hour < 22:
                     logger.info("⏹️ Arrêt forcé à 10h du matin. Fermeture du navigateur.")
                     await cleanup_browser(client, profile_id, playwright, browser)
-                    browser = context = client = profile_id = playwright = None
                     break
 
                 annonce_id = annonce["idSec"]
@@ -216,7 +217,7 @@ async def scrape_annonce_agences(queue):
                             idAgence = str(existing_finale_agence["_id"])
                             logger.info(f"ℹ️ Agence {store_id} trouvée dans agencesFinale avec _id: {idAgence}")
                         else:
-                            # Scraper les détails et créer directement dans agencesFinale
+                            # Scraper les détails et créer dans agencesFinale
                             agence_page = await context.new_page()
                             try:
                                 full_agence_url = f"https://www.leboncoin.fr{agence_link}"
@@ -237,7 +238,7 @@ async def scrape_annonce_agences(queue):
                                 }
                                 result = await agences_finale_collection.insert_one(agence_data)
                                 idAgence = str(result.inserted_id)
-                                logger.info(f"✅ Agence {store_id} créée directement dans agencesFinale avec _id: {idAgence}")
+                                logger.info(f"✅ Agence {store_id} créée dans agencesFinale avec _id: {idAgence}")
                             finally:
                                 await agence_page.close()
 
@@ -265,7 +266,7 @@ async def scrape_annonce_agences(queue):
                     await annonce_page.close()
                 remaining_annonces -= 1
 
-            if browser:  # Si le navigateur est encore ouvert après la boucle
+            if browser:
                 logger.info(f"🏁 Scraping terminé - Total : {total_annonces}, mises à jour : {len(updated_annonces)}, supprimées : {len(deleted_annonces)}")
                 await queue.put({"status": "success", "data": {"updated": updated_annonces, "deleted": deleted_annonces, "total": total_annonces, "remaining": remaining_annonces}})
                 await cleanup_browser(client, profile_id, playwright, browser)
@@ -274,5 +275,5 @@ async def scrape_annonce_agences(queue):
             logger.error(f"⚠️ Erreur dans la session : {e}")
             if browser:
                 await cleanup_browser(client, profile_id, playwright, browser)
-            await asyncio.sleep(10)  # Attendre avant de relancer
+            await asyncio.sleep(10)
             continue
