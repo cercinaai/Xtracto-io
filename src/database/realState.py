@@ -181,6 +181,7 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
         logger.info(f"⏭ Annonce {annonce_id} ignorée (storeId dans la liste noire).")
         return {"idSec": annonce_id, "images": annonce.get("images", []), "skipped": True}
     
+    
     # Vérifier si un document avec la même clé unique existe déjà
     unique_key_query = {
         "idSec": annonce["idSec"],
