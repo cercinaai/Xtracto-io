@@ -13,6 +13,8 @@ import asyncio
 from loguru import logger
 import pymongo.errors
 
+BLACKLISTED_STORE_IDS = {"5608823"}
+
 TARGET_API_URL = "https://api.leboncoin.fr/finder/search"
 total_scraped = 0
 
@@ -38,6 +40,12 @@ async def process_ad(ad: dict) -> bool:
     annonce_id = str(ad.get("list_id"))
     title = ad.get("subject")
     price = ad.get("price", [None])[0] if isinstance(ad.get("price"), list) else ad.get("price")
+
+    # Vérifier si l'annonce appartient à un storeId dans la liste noire
+    store_id = await get_attr_by_label(ad, "online_store_id")
+    if store_id in BLACKLISTED_STORE_IDS:
+        logger.info(f"⏭ Annonce {annonce_id} ignorée (storeId: {store_id} dans la liste noire).")
+        return True  # Passe à l'annonce suivante
 
     # Vérifier l'existence avec idSec, title et price
     if await annonce_exists_by_unique_key(annonce_id, title, price):

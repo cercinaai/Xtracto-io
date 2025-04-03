@@ -9,6 +9,9 @@ import aiohttp
 from loguru import logger
 from bson.objectid import ObjectId
 
+
+BLACKLISTED_STORE_IDS = {"5608823"}
+
 class RealState(BaseModel):
     idSec: str
     publication_date: Optional[datetime] = None
@@ -172,6 +175,12 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
     annonce_id = annonce["idSec"]
     dest_collection = dest_db["realStateFinale"]
 
+
+    # Vérifier si le storeId est dans la liste noire
+    if annonce.get("storeId") in BLACKLISTED_STORE_IDS:
+        logger.info(f"⏭ Annonce {annonce_id} ignorée (storeId dans la liste noire).")
+        return {"idSec": annonce_id, "images": annonce.get("images", []), "skipped": True}
+    
     # Vérifier si un document avec la même clé unique existe déjà
     unique_key_query = {
         "idSec": annonce["idSec"],

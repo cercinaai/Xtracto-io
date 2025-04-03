@@ -11,6 +11,7 @@ from src.scrapers.leboncoin.utils.human_behavorScrapperLbc import (
 from playwright.async_api import Page
 from loguru import logger
 
+BLACKLISTED_STORE_IDS = {"5608823"}
 async def scrape_agence_details(page: Page, store_id: str, lien: str) -> dict:
     """Scrape les détails d'une agence à partir de sa page."""
     update_data = {"scraped": True, "scraped_at": datetime.utcnow()}
@@ -148,7 +149,8 @@ async def scrape_annonce_agences(queue):
         withagence_ids = await realstate_withagence_collection.distinct("idSec")
         annonces = await realstate_collection.find({
             "idSec": {"$nin": withagence_ids},
-            "noAgenceFound": {"$ne": True}
+            "noAgenceFound": {"$ne": True},
+            "storeId": {"$nin": list(BLACKLISTED_STORE_IDS)}
         }).to_list(length=None)
         total_annonces = len(annonces)
         logger.info(f"📊 Nombre total d'annonces à traiter : {total_annonces}")

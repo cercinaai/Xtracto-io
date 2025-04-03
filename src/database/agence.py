@@ -4,6 +4,8 @@ from loguru import logger
 from src.database.database import get_source_db, get_destination_db
 from datetime import datetime
 
+
+BLACKLISTED_STORE_IDS = {"5608823"}
 class AgenceModel(BaseModel):
     storeId: str
     name: str
@@ -90,6 +92,11 @@ async def transfer_agence(storeId: str, name: Optional[str] = None) -> Optional[
 async def get_or_create_agence(store_id: str, store_name: str, store_logo: Optional[str] = None) -> str:
     source_db = get_source_db()
     agences_collection = source_db["agencesBrute"]
+    
+    # Vérifier si le storeId est dans la liste noire
+    if store_id in BLACKLISTED_STORE_IDS:
+        logger.info(f"⏭ Agence {store_id} ignorée (dans la liste noire).")
+        return None
 
     existing_agence = await agences_collection.find_one({"storeId": store_id, "name": store_name})
     if existing_agence:
