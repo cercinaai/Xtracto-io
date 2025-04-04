@@ -91,6 +91,7 @@ async def setup_browser():
             logger.info(f"Profil actif libéré après erreur, total actif : {active_profiles}")
         raise e
 
+
 async def cleanup_browser(client, profile_id, playwright, browser):
     global active_profiles
     try:
