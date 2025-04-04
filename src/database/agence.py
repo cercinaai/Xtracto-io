@@ -4,8 +4,8 @@ from loguru import logger
 from src.database.database import get_source_db, get_destination_db
 from datetime import datetime
 
-
 BLACKLISTED_STORE_IDS = {"5608823"}
+
 class AgenceModel(BaseModel):
     storeId: str
     name: str
@@ -32,10 +32,11 @@ async def transfer_agence(storeId: str, name: Optional[str] = None) -> Optional[
     source_collection = source_db["agencesBrute"]
     dest_collection = dest_db["agencesFinale"]
 
-    # Vérifier si l'agence existe déjà dans agencesFinale
-    existing = await dest_collection.find_one({"storeId": storeId})
-    agence_source = await source_collection.find_one({"storeId": storeId, "name": name})
+    if storeId in BLACKLISTED_STORE_IDS:
+        logger.info(f"⏭ Agence {storeId} ignorée (dans la liste noire).")
+        return None
 
+    agence_source = await source_collection.find_one({"storeId": storeId, "name": name})
     if not agence_source:
         logger.warning(f"⚠️ Agence {storeId} non trouvée dans agencesBrute. Création dans agencesBrute.")
         agence_source = {
@@ -57,43 +58,26 @@ async def transfer_agence(storeId: str, name: Optional[str] = None) -> Optional[
         agence_source["_id"] = result.inserted_id
         logger.info(f"✅ Agence {storeId} créée dans agencesBrute avec _id: {result.inserted_id}")
 
-    # Si l'agence n'existe pas dans agencesFinale, insérer directement
-    if not existing:
-        agence_data = agence_source.copy()
-        agence_source_id = agence_data["_id"]
-        del agence_data["_id"]  # Supprimer _id temporairement pour l'insertion
-        result = await dest_collection.insert_one(agence_data)
-        await dest_collection.update_one({"_id": result.inserted_id}, {"$set": {"_id": agence_source_id}})
-        logger.info(f"✅ Agence {storeId} transférée dans agencesFinale avec _id: {agence_source_id}")
-        return str(agence_source_id)
+    agence_data = agence_source.copy()
+    agence_source_id = agence_data.pop("_id", None)
 
-    # Si elle existe, comparer la complétude
-    existing_completeness = calculate_completeness(existing)
-    new_completeness = calculate_completeness(agence_source)
-
-    if new_completeness > existing_completeness:
-        # Mettre à jour uniquement si les nouvelles données sont plus complètes
-        agence_data = agence_source.copy()
-        agence_source_id = agence_data["_id"]
-        del agence_data["_id"]
-        await dest_collection.update_one(
-            {"storeId": storeId},
-            {"$set": agence_data}
-        )
-        await dest_collection.update_one(
-            {"storeId": storeId},
-            {"$set": {"_id": agence_source_id}}
-        )
-        logger.info(f"✅ Agence {storeId} mise à jour dans agencesFinale avec _id: {agence_source_id} (plus complète)")
-        return str(agence_source_id)
+    # Utiliser update_one avec upsert pour éviter les doublons
+    result = await dest_collection.update_one(
+        {"storeId": storeId},
+        {"$set": agence_data},
+        upsert=True
+    )
+    if result.matched_count > 0:
+        logger.info(f"✅ Agence {storeId} mise à jour dans agencesFinale.")
     else:
-        logger.info(f"ℹ️ Agence {storeId} déjà présente dans agencesFinale avec _id: {existing['_id']} et plus complète.")
-        return str(existing["_id"])
+        await dest_collection.update_one({"storeId": storeId}, {"$set": {"_id": agence_source_id}})
+        logger.info(f"✅ Agence {storeId} insérée dans agencesFinale avec _id: {agence_source_id}")
+    return str(agence_source_id)
+
 async def get_or_create_agence(store_id: str, store_name: str, store_logo: Optional[str] = None) -> str:
     source_db = get_source_db()
     agences_collection = source_db["agencesBrute"]
     
-    # Vérifier si le storeId est dans la liste noire
     if store_id in BLACKLISTED_STORE_IDS:
         logger.info(f"⏭ Agence {store_id} ignorée (dans la liste noire).")
         return None

@@ -3,12 +3,10 @@ from typing import Optional, List, Dict
 from datetime import datetime
 from src.database.database import get_source_db, get_destination_db
 from src.utils.b2_utils import upload_image_to_b2
-from urllib.parse import urlparse
 import asyncio
 import aiohttp
 from loguru import logger
 from bson.objectid import ObjectId
-
 
 BLACKLISTED_STORE_IDS = {"5608823"}
 
@@ -111,25 +109,9 @@ async def transfer_annonce(annonce: Dict) -> bool:
     dest_db = get_destination_db()
     source_collection = source_db["realState"]
     dest_collection = dest_db["realState"]
-    existing = await dest_collection.find_one({"idSec": annonce["idSec"], "title": annonce["title"], "price": annonce["price"]})
-    if existing:
-        update_data = {}
-        for key, value in annonce.items():
-            if key != "_id" and (key not in existing or existing[key] is None):
-                update_data[key] = value
-        if update_data:
-            result = await dest_collection.update_one(
-                {"idSec": annonce["idSec"], "title": annonce["title"], "price": annonce["price"]},
-                {"$set": update_data}
-            )
-            if result.modified_count > 0:
-                return True
-        return False
-    else:
-        await dest_collection.insert_one(annonce)
-        return True
-
-
+    unique_key_query = {"idSec": annonce["idSec"], "title": annonce.get("title"), "price": annonce.get("price")}
+    result = await dest_collection.update_one(unique_key_query, {"$set": annonce}, upsert=True)
+    return result.modified_count > 0 or result.upserted_id is not None
 
 async def check_image_url(url: str) -> bool:
     """Check if an image URL is accessible."""
@@ -140,63 +122,21 @@ async def check_image_url(url: str) -> bool:
         except Exception:
             return False
 
-# Fonction principale pour exécuter le transfert en boucle
-async def run_transfer_loop():
-    source_db = get_source_db()
-    dest_db = get_destination_db()
-    withagence_collection = source_db["realStateWithAgence"]
-    while True:
-        try:
-            finale_ids = await dest_db["realStateFinale"].distinct("idSec")
-            annonces = await withagence_collection.find({
-                "idSec": {"$nin": finale_ids},
-                "processed": {"$ne": True}
-            }).to_list(length=None)
-            total_annonces = len(annonces)
-            logger.info(f"📊 Nombre total d'annonces à transférer : {total_annonces}")
-
-            if total_annonces == 0:
-                logger.info("ℹ️ Aucune annonce à transférer dans realStateWithAgence.")
-                await asyncio.sleep(60)
-                continue
-
-            for annonce in annonces:
-                await transfer_from_withagence_to_finale(annonce)
-
-            await asyncio.sleep(60)
-        except Exception as e:
-            logger.error(f"⚠️ Erreur lors du transfert : {e}")
-            await asyncio.sleep(10)
-
-
 async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
     source_db = get_source_db()
     dest_db = get_destination_db()
     annonce_id = annonce["idSec"]
     dest_collection = dest_db["realStateFinale"]
 
-
-    # Vérifier si le storeId est dans la liste noire
     if annonce.get("storeId") in BLACKLISTED_STORE_IDS:
         logger.info(f"⏭ Annonce {annonce_id} ignorée (storeId dans la liste noire).")
         return {"idSec": annonce_id, "images": annonce.get("images", []), "skipped": True}
-    
-    
-    # Vérifier si un document avec la même clé unique existe déjà
+
     unique_key_query = {
         "idSec": annonce["idSec"],
         "title": annonce.get("title"),
         "price": annonce.get("price")
     }
-    existing = await dest_collection.find_one(unique_key_query)
-
-    if existing:
-        all_images_processed = all(img.startswith("https://f003.backblazeb2.com") for img in existing.get("images", []))
-
-        # Vérifier si toutes les images sont déjà traitées et si processed=True
-        if all_images_processed and existing.get("processed", False):
-            logger.debug(f"Annonce {annonce_id} déjà présente avec toutes les images traitées et processed=True.")
-            return {"idSec": annonce_id, "images": existing.get("images", []), "skipped": True}
 
     # Gestion des images
     image_urls = annonce.get("images", [])
@@ -204,24 +144,13 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
         logger.debug(f"Annonce {annonce_id} n'a pas d'images valides.")
         return {"idSec": annonce_id, "images": image_urls or [], "skipped": True}
 
-    tasks = []
-    for idx, url in enumerate(image_urls):
-        if url == "N/A" or url.startswith("https://f003.backblazeb2.com"):
-            tasks.append(asyncio.ensure_future(asyncio.sleep(0, result=url)))
-        else:
-            file_name = f"{annonce_id}_{idx}.jpg"
-            tasks.append(upload_image_to_b2(url, file_name))
-
+    tasks = [
+        upload_image_to_b2(url, f"{annonce_id}_{idx}.jpg") if url != "N/A" and not url.startswith("https://f003.backblazeb2.com") 
+        else asyncio.sleep(0, result=url) 
+        for idx, url in enumerate(image_urls)
+    ]
     updated_image_urls = await asyncio.gather(*tasks, return_exceptions=True)
-    final_urls = []
-    has_valid_image = False
-
-    for url, result in zip(image_urls, updated_image_urls):
-        if isinstance(result, Exception) or result == "N/A":
-            final_urls.append(url)
-        else:
-            final_urls.append(result)
-            has_valid_image = True
+    final_urls = [url if isinstance(result, Exception) or result == "N/A" else result for url, result in zip(image_urls, updated_image_urls)]
 
     # Gestion de l'agence
     id_agence = annonce.get("idAgence")
@@ -280,35 +209,45 @@ async def transfer_from_withagence_to_finale(annonce: Dict) -> Dict:
     annonce_to_transfer["processed"] = True
     annonce_to_transfer["processed_at"] = datetime.utcnow()
 
-    try:
-        if existing:
-            # Mise à jour si le document existe déjà
-            await dest_collection.update_one(
-                unique_key_query,
-                {"$set": {
-                    "images": final_urls,
-                    "nbrImages": annonce_to_transfer["nbrImages"],
-                    "idAgence": final_id_agence,
-                    "scraped_at": annonce_to_transfer["scraped_at"],
-                    "processed": True,
-                    "processed_at": annonce_to_transfer["processed_at"]
-                }}
-            )
-            logger.info(f"✅ Annonce {annonce_id} mise à jour dans realStateFinale avec idAgence {final_id_agence}.")
-        else:
-            # Insertion si le document n'existe pas
-            annonce_to_transfer["_id"] = annonce.get("_id")
-            await dest_collection.insert_one(annonce_to_transfer)
-            logger.info(f"✅ Annonce {annonce_id} transférée dans realStateFinale avec idAgence {final_id_agence}.")
-    except Exception as e:
-        if "E11000 duplicate key error" in str(e):
-            logger.debug(f"Annonce {annonce_id} est un doublon (idSec, title, price) et a été ignorée.")
-            return {"idSec": annonce_id, "images": final_urls, "skipped": True}
-        else:
-            logger.error(f"Erreur lors du transfert de {annonce_id} : {e}")
-            raise
+    # Utiliser update_one avec upsert pour éviter les doublons
+    result = await dest_collection.update_one(
+        unique_key_query,
+        {"$set": annonce_to_transfer},
+        upsert=True
+    )
+    if result.matched_count > 0:
+        logger.info(f"✅ Annonce {annonce_id} mise à jour dans realStateFinale avec idAgence {final_id_agence}.")
+    else:
+        logger.info(f"✅ Annonce {annonce_id} insérée dans realStateFinale avec idAgence {final_id_agence}.")
 
     return {"idSec": annonce_id, "images": final_urls, "skipped": False}
+
+async def run_transfer_loop():
+    source_db = get_source_db()
+    dest_db = get_destination_db()
+    withagence_collection = source_db["realStateWithAgence"]
+    while True:
+        try:
+            finale_ids = await dest_db["realStateFinale"].distinct("idSec")
+            annonces = await withagence_collection.find({
+                "idSec": {"$nin": finale_ids},
+                "processed": {"$ne": True}
+            }).to_list(length=None)
+            total_annonces = len(annonces)
+            logger.info(f"📊 Nombre total d'annonces à transférer : {total_annonces}")
+
+            if total_annonces == 0:
+                logger.info("ℹ️ Aucune annonce à transférer dans realStateWithAgence.")
+                await asyncio.sleep(60)
+                continue
+
+            for annonce in annonces:
+                await transfer_from_withagence_to_finale(annonce)
+
+            await asyncio.sleep(60)
+        except Exception as e:
+            logger.error(f"⚠️ Erreur lors du transfert : {e}")
+            await asyncio.sleep(10)
 
 if __name__ == "__main__":
     asyncio.run(run_transfer_loop())

@@ -10,7 +10,9 @@ from src.scrapers.leboncoin.utils.human_behavorScrapperLbc import (
 )
 from playwright.async_api import Page
 from loguru import logger
+
 BLACKLISTED_STORE_IDS = {"5608823"}
+
 async def scrape_agence_details(page: Page, store_id: str, lien: str) -> dict:
     """Scrape les détails d'une agence à partir de sa page."""
     update_data = {"scraped": True, "scraped_at": datetime.utcnow()}
@@ -131,10 +133,6 @@ async def scrape_agences(queue):
     agences_brute_collection = source_db["agencesBrute"]
     agences_finale_collection = dest_db["agencesFinale"]
 
-    def calculate_completeness(data: dict) -> int:
-        fields = ["CodeSiren", "logo", "adresse", "zone_intervention", "siteWeb", "horaires", "number", "description"]
-        return sum(1 for field in fields if data.get(field) not in [None, "Non trouvé", ""])
-
     while True:
         current_hour = datetime.now().hour
         logger.info(f"⏰ Vérification horaire - Heure actuelle : {current_hour}h")
@@ -210,24 +208,17 @@ async def scrape_agences(queue):
                     agence_data = {**agence, **update_data}
                     agence_data["_id"] = original_id
 
-                    # Vérifier si elle existe dans agencesFinale
-                    existing = await agences_finale_collection.find_one({"storeId": store_id})
-                    if existing:
-                        existing_completeness = calculate_completeness(existing)
-                        new_completeness = calculate_completeness(agence_data)
-                        if new_completeness > existing_completeness:
-                            await agences_finale_collection.update_one(
-                                {"storeId": store_id},
-                                {"$set": agence_data}
-                            )
-                            logger.info(f"✅ Agence {store_id} mise à jour dans agencesFinale avec _id: {original_id}")
-                        else:
-                            logger.info(f"ℹ️ Agence {store_id} déjà dans agencesFinale avec données plus complètes.")
+                    # Utiliser update_one avec upsert pour éviter les doublons
+                    result = await agences_finale_collection.update_one(
+                        {"storeId": store_id},
+                        {"$set": agence_data},
+                        upsert=True
+                    )
+                    if result.matched_count > 0:
+                        logger.info(f"✅ Agence {store_id} mise à jour dans agencesFinale avec _id: {original_id}")
                     else:
-                        await agences_finale_collection.insert_one(agence_data)
                         logger.info(f"✅ Agence {store_id} insérée dans agencesFinale avec _id: {original_id}")
 
-                    # Mettre à jour agencesBrute
                     await agences_brute_collection.update_one(
                         {"_id": original_id},
                         {"$set": update_data}

@@ -12,6 +12,7 @@ from playwright.async_api import Page
 from loguru import logger
 
 BLACKLISTED_STORE_IDS = {"5608823"}
+
 async def scrape_agence_details(page: Page, store_id: str, lien: str) -> dict:
     """Scrape les détails d'une agence à partir de sa page."""
     update_data = {"scraped": True, "scraped_at": datetime.utcnow()}
@@ -133,10 +134,6 @@ async def scrape_annonce_agences(queue):
     realstate_withagence_collection = source_db["realStateWithAgence"]
     agences_finale_collection = dest_db["agencesFinale"]
 
-    def calculate_completeness(data: dict) -> int:
-        fields = ["CodeSiren", "logo", "adresse", "zone_intervention", "siteWeb", "horaires", "number", "description"]
-        return sum(1 for field in fields if data.get(field) not in [None, "Non trouvé", ""])
-
     while True:
         current_hour = datetime.now().hour
         logger.info(f"⏰ Vérification horaire - Heure actuelle : {current_hour}h")
@@ -213,13 +210,11 @@ async def scrape_annonce_agences(queue):
                         store_id = agence_link.split("/boutique/")[1].split("/")[0]
                         logger.info(f"🔗 Lien d'agence trouvé : {agence_link}, store_id : {store_id}")
 
-                        # Vérifier si l'agence existe dans agencesFinale
                         existing_finale_agence = await agences_finale_collection.find_one({"storeId": store_id})
                         if existing_finale_agence:
                             idAgence = str(existing_finale_agence["_id"])
                             logger.info(f"ℹ️ Agence {store_id} trouvée dans agencesFinale avec _id: {idAgence}")
                         else:
-                            # Scraper les détails et créer dans agencesFinale
                             agence_page = await context.new_page()
                             try:
                                 full_agence_url = f"https://www.leboncoin.fr{agence_link}"
@@ -238,13 +233,16 @@ async def scrape_annonce_agences(queue):
                                     "lien": full_agence_url,
                                     **update_data
                                 }
-                                result = await agences_finale_collection.insert_one(agence_data)
-                                idAgence = str(result.inserted_id)
-                                logger.info(f"✅ Agence {store_id} créée dans agencesFinale avec _id: {idAgence}")
+                                result = await agences_finale_collection.update_one(
+                                    {"storeId": store_id},
+                                    {"$set": agence_data},
+                                    upsert=True
+                                )
+                                idAgence = str(result.upserted_id if result.upserted_id else (await agences_finale_collection.find_one({"storeId": store_id}))["_id"])
+                                logger.info(f"✅ Agence {store_id} insérée/mise à jour dans agencesFinale avec _id: {idAgence}")
                             finally:
                                 await agence_page.close()
 
-                        # Associer l'agence à l'annonce
                         annonce["idAgence"] = idAgence
                         annonce["processed"] = False
                         annonce["scraped_at"] = datetime.utcnow()
